@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EON Senpa — Multi-Account Experimental
 // @namespace    personal.senpa.recovered
-// @version      1.8.1
+// @version      1.9.0
 // @description  Eon with native Senpa multi, one game connection and Senpa sign-in; no localhost.
 // @match        https://senpa.io/web*
 // @match        https://www.senpa.io/web*
@@ -57,6 +57,100 @@
             gradient: 'data:image/svg+xml,' + encodeURIComponent(gradient),
             fetchSkin
         };
+
+        // EON diagnostics: metadata only; never capture request or response bodies, tokens, or cookies.
+        (() => {
+            if (window.__EON_DIAGNOSTICS__) return;
+            const logs = [];
+            const MAX = 450;
+            let activeTab = 'ALL LOGS';
+            let root, content, count;
+            const safe = value => String(value ?? '').replace(/(Bearer\s+)[^\s]+/ig, '$1[REDACTED]')
+                .replace(/(access[_-]?token|refresh[_-]?token|jwt|sessionid|accesskey|password|authorization|cookie)\s*[:=]\s*[^\s&,;]+/ig, '$1=[REDACTED]').slice(0, 350);
+            const endpoint = value => {
+                try { const u = new URL(String(value), location.href); return u.protocol + '//' + u.host + u.pathname; }
+                catch { return '[unknown endpoint]'; }
+            };
+            const add = (level, category, message, info) => {
+                const entry = {time: new Date().toISOString(), level, category, message: safe(message)};
+                if (info !== undefined) entry.info = safe(info);
+                logs.push(entry); if (logs.length > MAX) logs.shift();
+                render();
+            };
+            const description = code => ({1000:'Normal close',1001:'Endpoint going away',1002:'Protocol error',1003:'Unsupported data',1006:'Abnormal close (no close frame)',1007:'Invalid payload',1008:'Policy violation',1009:'Message too large',1011:'Server unexpected condition',1012:'Service restart',1013:'Try again later',1015:'TLS handshake failure'})[code] || (code >= 4000 && code <= 4999 ? 'Application-defined code (server-specific)' : 'Unknown close code');
+            const NativeWS = window.WebSocket;
+            if (typeof NativeWS === 'function') {
+                window.WebSocket = new Proxy(NativeWS, {construct(Target, args, newTarget) {
+                    const ws = Reflect.construct(Target, args, newTarget);
+                    const url = endpoint(args[0]);
+                    add('INFO','CONNECTIONS','WebSocket connecting',url);
+                    ws.addEventListener('open', () => add('INFO','CONNECTIONS','WebSocket open',url));
+                    ws.addEventListener('error', () => add('ERROR','CONNECTIONS','WebSocket transport error (no details provided by browser)',url));
+                    ws.addEventListener('close', event => add(event.wasClean ? 'WARN' : 'ERROR','CONNECTIONS',`WebSocket closed: ${event.code} · ${description(event.code)}`,`${url} · clean=${event.wasClean} · reason=${safe(event.reason || '[not supplied]')}`));
+                    return ws;
+                }});
+                add('INFO','CONNECTIONS','WebSocket monitor installed');
+            }
+            const nativeFetch = window.fetch;
+            if (typeof nativeFetch === 'function') {
+                window.fetch = function(...args) {
+                    let url = '', method = 'GET';
+                    try { url = typeof args[0] === 'string' ? args[0] : args[0]?.url; method = args[1]?.method || args[0]?.method || 'GET'; } catch {}
+                    const auth = /auth|session|heartbeat|login|account/i.test(String(url));
+                    let result;
+                    try { result = nativeFetch.apply(this, args); }
+                    catch (e) { if(auth) add('ERROR','AUTH','Request failed before send',`${method} ${endpoint(url)} ${e?.name || 'Error'}`); throw e; }
+                    if (!auth) return result;
+                    return Promise.resolve(result).then(response => { add(response.ok ? 'INFO':'WARN','AUTH',`HTTP ${response.status}`,`${method} ${endpoint(url)}`); return response; }, err => { add('ERROR','AUTH','Network request rejected',`${method} ${endpoint(url)} ${err?.name || 'Error'}`); throw err; });
+                };
+            }
+            window.addEventListener('error',e => add('ERROR','ERRORS','JavaScript error',`${e.message || 'Unknown error'} · ${endpoint(e.filename || '')}:${e.lineno || '?'}`));
+            window.addEventListener('unhandledrejection',e => add('ERROR','ERRORS','Unhandled promise rejection',e.reason?.message || e.reason?.name || 'Unknown rejection'));
+            const nativeWarn = window.console.warn.bind(window.console);
+            const nativeError = window.console.error.bind(window.console);
+            for (const [name, original] of [['warn',nativeWarn],['error',nativeError]]) {
+                window.console[name] = (...args) => {
+                    try { const msg = args.map(a => typeof a === 'string' ? a : a?.message || '[object]').join(' '); add(name === 'error' ? 'ERROR':'WARN', /auth|jwt|token/i.test(msg) ? 'AUTH' : /connect|disconnect|socket|spawn|bot/i.test(msg) ? 'CONNECTIONS' : 'ERRORS', msg); } catch {}
+                    return original(...args);
+                };
+            }
+            const style = `position:fixed;bottom:18px;right:18px;z-index:2147483647;font:12px system-ui,sans-serif;color:#dce9ff;`;
+            function render() {
+                if(!content) return;
+                const selected = logs.filter(e => activeTab === 'ALL LOGS' || (activeTab === 'ERRORS' ? e.level === 'ERROR' || e.category === 'ERRORS' : e.category === 'CONNECTIONS'));
+                content.replaceChildren();
+                for(const entry of selected.slice(-150)) {
+                    const line = document.createElement('div');
+                    line.style.cssText='border-bottom:1px solid #26354b;padding:5px 0;white-space:pre-wrap;overflow-wrap:anywhere;color:'+(entry.level === 'ERROR' ? '#ff9b9b' : entry.level === 'WARN' ? '#ffce83' : '#bdd8f9');
+                    line.textContent=`${entry.time.substring(11,19)} [${entry.level}] [${entry.category}] ${entry.message}${entry.info ? ' — '+entry.info : ''}`;
+                    content.appendChild(line);
+                }
+                count.textContent = `${logs.length} events · ${logs.filter(x=>x.level==='ERROR').length} errors`;
+                content.scrollTop = content.scrollHeight;
+            }
+            function mount() {
+                if(!document.body || root?.isConnected) return;
+                root=document.createElement('div');root.id='eon-diagnostics';root.style.cssText=style;
+                const toggle=document.createElement('button');toggle.textContent='EON CONSOLE';toggle.style.cssText='background:#173a55;border:1px solid #4882a5;color:#fff;padding:10px 15px;border-radius:8px;cursor:pointer;float:right';
+                const panel=document.createElement('div');panel.style.cssText='display:none;clear:both;width:min(530px,90vw);height:360px;background:#0b1422;border:1px solid #42617f;border-radius:9px;padding:10px;box-shadow:0 8px 35px #000b;';
+                toggle.onclick=()=>{ panel.style.display=panel.style.display==='none'?'flex':'none';render();};panel.style.flexDirection='column';
+                const title=document.createElement('div');title.textContent='EON · Connection Diagnostics';title.style.cssText='font-weight:700;margin-bottom:8px';panel.append(title);
+                const nav=document.createElement('div');nav.style.cssText='display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px';
+                const button=(label, handler)=>{const b=document.createElement('button');b.textContent=label;b.style.cssText='background:#20364d;color:#e2f1ff;border:1px solid #42617f;border-radius:5px;padding:5px 8px;cursor:pointer';b.onclick=handler;nav.append(b);};
+                for(const tab of ['ALL LOGS','ERRORS','CONNECTIONS'])button(tab,()=>{activeTab=tab;render();});
+                button('EXPORT',()=>{const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),notes:'URLs have query strings removed. No payloads, cookies or credentials intentionally collected.',events:logs},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='eon-diagnostics-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);});
+                button('CLEAR',()=>{logs.length=0;render();});panel.append(nav);
+                count=document.createElement('div');count.style.cssText='color:#9bb9d5;margin-bottom:6px';panel.append(count);
+                content=document.createElement('div');content.style.cssText='flex:1;min-height:0;overflow:auto;background:#070f1b;border:1px solid #2b4058;padding:8px';panel.append(content);
+                root.append(toggle,panel);document.body.append(root);render();
+            }
+            const observer=new MutationObserver(()=>{if(!root?.isConnected)mount();});
+            observer.observe(document,{childList:true,subtree:true});
+            mount();
+            window.__EON_DIAGNOSTICS__={add,export:()=>logs.map(x=>({...x})),open:()=>{mount();root?.querySelector('button')?.click();}};
+            add('INFO','SYSTEM','Diagnostics active; metadata-only logging');
+        })();
+
         for (const item of payload.scripts) {
             new window.Function(item.source + '\n//# sourceURL=eon-senpa://' + item.name).call(window);
         }
