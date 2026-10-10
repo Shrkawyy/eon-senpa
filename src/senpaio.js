@@ -21,6 +21,17 @@
     let generation = 0, refreshTask = null, profileTask = null;
     let adoptTask = null, adoptedToken = null;
     let timer = null, popupTimer = null, popup = null, popupDeadline = 0, popupClosedAt = 0, popupProvider = '';
+    // Diagnostics only: never expose authentication credentials or response bodies.
+    function report(phase, status, detail = '') {
+        try { options.onDiagnostic?.({phase, status, detail: String(detail).slice(0, 160)}); } catch {}
+    }
+    function explainStatus(status, operation) {
+        if (status === 401) return operation + ': HTTP 401 — session/token not accepted. This is not proof of a ban.';
+        if (status === 403) return operation + ': HTTP 403 — forbidden by Senpa. Possible session, policy or permission issue; not proof of a ban.';
+        if (status === 429) return operation + ': HTTP 429 — too many requests. Wait before trying again.';
+        if (status >= 500) return operation + ': HTTP ' + status + ' — Senpa server error.';
+        return operation + ': HTTP ' + status + '.';
+    }
     // Only the account whose login the user most recently opened owns the callback.
     const loginOwners = createAccount.loginOwners || (createAccount.loginOwners = new WeakMap());
     const read = key => { try { return env.localStorage.getItem(key); } catch { return null; } };
@@ -37,7 +48,7 @@
             return typeof data.exp === 'number' ? data.exp * 1000 : 0;
         } catch { return 0; }
     }
-    function snapshot() { return { status, account, error, signedIn: !!token }; }
+    function snapshot() { return { status, account, error, signedIn: !!token, verified: !!token && !!account }; }
     function needsRefresh(value) { return !!expiry(value) && expiry(value) <= Date.now() + EXPIRY_SKEW_MS; }
     function notify() { for (const listener of listeners) listener(snapshot()); }
     function schedule(delay = REFRESH_MS) {
@@ -99,12 +110,16 @@
                     if (epoch !== generation || token !== current) return null;
                 }
                 if (response.status === 401) {
+                    report('PROFILE', 401, 'Account profile rejected after refresh attempt');
                     save(REFRESH, null);
-                    error = 'Session expired or rejected. Sign in again.';
+                    error = explainStatus(401, 'Account verification') + ' Sign in again.';
                     setToken(null);
                     return null;
                 }
-                if (!response.ok) throw Error('Could not load Senpa account (HTTP ' + response.status + ').');
+                if (!response.ok) {
+                    report('PROFILE', response.status, 'Account profile request failed');
+                    throw Error(explainStatus(response.status, 'Account verification'));
+                }
                 const data = await response.json();
                 if (epoch !== generation || token !== current) return null;
                 if (data.error || data.cmd === 'reset-account-store') {
@@ -113,12 +128,14 @@
                 if (epoch === generation && token === current) {
                     account = data; error = '';
                     if (data.id != null) save(ACCOUNT_ID, String(data.id));
+                    report('PROFILE', 200, 'Account verified by official Senpa API');
                     notify();
                 }
                 return data;
             } catch (failure) {
                 if (epoch === generation && token === current) {
                     error = failure.name === 'AbortError' ? 'Account request timed out.' : failure.message;
+                    report('PROFILE', 0, error);
                     if (token) schedule(RETRY_MS);
                     notify();
                 }
@@ -151,11 +168,13 @@
                 const response = await fetchAPI('/auth/refresh', request);
                 if (epoch !== generation) return false;
                 if (response.status === 401) {
+                    report('REFRESH', 401, 'Refresh token/cookie rejected');
                     save(REFRESH, null);
                     if (!token || needsRefresh(token)) setToken(null);
                     return false;
                 }
                 if (!response.ok) {
+                    report('REFRESH', response.status, 'Session refresh failed');
                     // Native refresh preserves the current access token on a
                     // temporary HTTP failure and schedules another attempt.
                     if (token) schedule(RETRY_MS);
@@ -173,10 +192,12 @@
                     if (profile.id == null || String(profile.id) !== String(expectedId)) throw Error('Browser login belongs to another account. Sign in to your main account again to renew it.');
                 }
                 if (!accept(data, epoch)) throw Error('Invalid session response.');
+                report('REFRESH', 200, 'Session refreshed');
                 return true;
             } catch (failure) {
                 if (epoch === generation) {
                     error = failure.name === 'AbortError' ? 'Session request timed out. Try signing in again.' : failure.message;
+                    report('REFRESH', 0, error);
                     if (token) schedule(RETRY_MS);
                     notify();
                 }
@@ -206,12 +227,18 @@
                     method:'POST', credentials:'include', headers:{Authorization:'Bearer ' + value}
                 });
                 if (epoch !== generation || token !== value) return false;
-                if (response.ok) return accept(await response.json(), epoch);
-                if (response.status === 401 || response.status === 403) return false;
+                if (response.ok) {
+                    report('ADOPT', 200, 'OAuth session adopted successfully');
+                    return accept(await response.json(), epoch);
+                }
+                if (response.status === 401 || response.status === 403) {
+                    report('ADOPT', response.status, 'Official OAuth adoption was rejected; profile verification still required');
+                    return false;
+                }
                 throw Error('Session adoption unavailable (HTTP ' + response.status + ').');
             } catch {
                 if (epoch !== generation || token !== value) return false;
-                if (!retries) { adoptedToken = null; return false; }
+                if (!retries) { report('ADOPT', 0, 'OAuth adoption request failed after retries'); adoptedToken = null; return false; }
                 await new Promise(resolve => env.setTimeout(resolve, ADOPT_RETRY_MS));
                 return attempt(retries - 1);
             }
@@ -228,6 +255,8 @@
         if (!explicitSession) { cookieAccountPinned = false; save(prefix + ':explicit', null); }
         error = '';
         setToken(value);
+        status = 'verifying'; notify();
+        report('CALLBACK', 0, 'Official OAuth callback received; verifying with Senpa');
         // Native adoption failure must not discard a usable OAuth access token.
         await adopt(value, epoch);
         if (epoch === generation) await loadProfile();
@@ -249,10 +278,10 @@
         clearPopup();
         // Open synchronously from the button click, before any asynchronous work.
         popup = env.open(API + '/auth/' + provider, options.popupName || 'SenpaAccountLogin', 'popup,width=600,height=700');
-        if (!popup) { error = 'Popup blocked. Allow popups for Senpa and try again.'; notify(); return false; }
+        if (!popup) { error = 'Popup blocked. Allow popups for Senpa and try again.'; report('POPUP', 0, 'Browser blocked the OAuth login window'); notify(); return false; }
         loginOwners.set(env, cancelLogin); popupProvider = provider;
         popup.focus?.();
-        status = 'signing-in'; error = ''; notify();
+        status = 'signing-in'; error = ''; report('POPUP', 0, 'Opened official ' + provider + ' login window'); notify();
         popupDeadline = Date.now() + 600000;
         popupTimer = env.setInterval(() => {
             // Facebook can report the old WindowProxy as closed during redirects.
@@ -260,12 +289,14 @@
             if (popup?.closed && !popupClosedAt) popupClosedAt = Date.now();
             if (!popup?.closed) popupClosedAt = 0;
             if (popupClosedAt && Date.now() - popupClosedAt >= 10000 && !error) {
-                error = 'Waiting for Senpa to return the login result. If the window is gone, click login to retry.'; notify();
+                error = 'Waiting for Senpa to return the login result. If the window is gone, click login to retry.';
+                report('POPUP', 0, 'Login popup closed without confirmed callback yet'); notify();
             }
             if (Date.now() >= popupDeadline) {
                 clearPopup();
                 status = token ? 'signed-in' : 'signed-out';
-                error = 'Login window closed without a result. Open login again to retry.'; notify();
+                error = 'Login window closed without a result. Open login again to retry.';
+                report('POPUP', 0, 'OAuth callback not received before timeout'); notify();
                 refresh().catch(() => {});
             }
         }, 500);
@@ -294,6 +325,7 @@
         // a later reload from silently signing this account back in.
         const canRevoke = (!explicitSession && !cookieAccountPinned) || !!read(REFRESH);
         save(REFRESH, null); save(ACCOUNT_ID, null); error = ''; setToken(null);
+        report('LOGOUT', 0, 'User requested local logout');
         try { if (canRevoke) await fetchAPI('/auth/logout', options); }
         catch { error = 'Signed out here; the server logout request failed.'; notify(); }
     }

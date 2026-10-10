@@ -309,6 +309,7 @@
                     };
                     const message = messages[event.code] || 'Game connection closed (code ' + event.code + ').';
                     this.lastCloseCode = event.code;
+                    this.lastCloseReason = typeof event.reason === 'string' ? event.reason.slice(0, 240) : '';
                     this.logger.warn('[Senpa]', message);
                     const label = this.isAuxiliary ? null : document.querySelector('.reconnect-message');
                     if (label) label.textContent = message;

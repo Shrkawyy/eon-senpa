@@ -1,3 +1,9 @@
+## Latest patch: EON 1.9.0 — Auth & Bot Diagnostics
+
+This patch replaces the previous bot-only console package. It verifies accounts via the official Senpa account endpoint before bot connections and diagnoses OAuth callback, adoption and account HTTP statuses. It does not circumvent account/server limits. Read `AUTH-BOT-DIAGNOSTICS.md` before testing.
+
+**Important:** the recovered third-party `inline-2.js` test shim fabricated EON authorization and heartbeat responses, so it is **disabled** in the deployed script. A legitimate EON authorization may be necessary to run proprietary components. Keep a backup of the previous version and test locally first. Only the deployment script uses `src/` files. `original-files/` is a historical recovery backup, not loaded.
+
 # Senpa Recovery — Personal Edition
 
 Recovered from a Chrome DevTools/Tampermonkey export supplied by the owner. This repository contains a usable **self-contained userscript** and editable extracted source scripts.

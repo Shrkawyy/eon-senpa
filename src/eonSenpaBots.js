@@ -95,7 +95,8 @@
             // Each account has isolated local token storage and its own two helper connections.
             this.accounts = Array.from({length:10}, (_, index) => root.createSenpaAccount(root, {
                 prefix:'eon_bots_' + (index + 1), isolated:true,
-                popupName:'SenpaBotAccountLogin_' + (index + 1)
+                popupName:'SenpaBotAccountLogin_' + (index + 1),
+                onDiagnostic:event => this.accountLog(index, event)
             }));
             let names = [];
             try { names = JSON.parse(localStorage.getItem('eon_bot_names') || '[]'); } catch {}
@@ -113,7 +114,8 @@
                     const row = this.panel.querySelector('[data-account-row="' + accountIndex + '"]');
                     if (!row) return;
                     row.querySelector('[data-account-status]').textContent = state.status === 'signing-in' ? 'Complete sign-in in popup…' :
-                        state.signedIn ? (profile?.name || profile?.username || profile?.id || 'Signed in') : 'Guest';
+                        state.verified ? 'Verified: ' + (profile?.name || profile?.username || profile?.id || 'Senpa account') :
+                        state.signedIn ? 'Token received · verification pending' : 'Guest';
                     row.querySelector('[data-account-error]').textContent = state.error || '';
                     row.querySelector('[data-account-logout]').hidden = !state.signedIn;
                     if (current !== lastToken) {
@@ -193,19 +195,33 @@
                 until:now + 2500 + Math.random() * 1500
             };
         }
+        accountLog(accountIndex, event) {
+            if (!Array.isArray(this.botLogs)) return;
+            const clean = value => String(value ?? '').replace(/(?:eyJ[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+/g, '[redacted JWT]')
+                .replace(/(?:access_token|authorization|password|sessionId|accessKey)\s*[:=]\s*[^\s&,;]+/gi, '$1=[redacted]').slice(0, 220);
+            const entry = {time:new Date().toISOString(), account:accountIndex+1, bot:null, type:'AUTH',
+                phase:clean(event.phase), status:event.status, message:clean(event.detail)};
+            this.botLogs.push(entry);
+            if (this.botLogs.length > 500) this.botLogs.shift();
+            this.paintBotLogs();
+        }
         botLog(bot, type, message, meta = {}) {
             const clean = v => String(v ?? '').replace(/(?:eyJ[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+/g, '[redacted JWT]').replace(/(?:access_token|authorization|password|sessionId|accessKey)\s*[:=]\s*[^\s&,;]+/gi, '$1=[redacted]').slice(0, 350);
             const event = {time:new Date().toISOString(), account:bot.accountIndex+1, bot:bot.index+1, type, message:clean(message)};
             if (Number.isInteger(meta.code)) event.code = meta.code;
             if (meta.reason) event.reason = clean(meta.reason);
             this.botLogs.push(event);
-            if (this.botLogs.length > 400) this.botLogs.shift();
+            if (this.botLogs.length > 500) this.botLogs.shift();
             this.paintBotLogs();
         }
         paintBotLogs() {
             const out = this.panel?.querySelector('[data-bot-logs]');
             if (!out || out.hidden) return;
-            out.textContent = this.botLogs.slice(-100).map(e => `[${e.time.slice(11,19)}] Account ${e.account} Bot ${e.bot} · ${e.type}: ${e.message}${e.code !== undefined ? ' (code '+e.code+')' : ''}${e.reason ? ' · '+e.reason : ''}`).join('\n') || 'No bot events yet';
+            const filter = this.panel?.querySelector('[data-bot-filter]')?.value || 'all';
+            const rows = this.botLogs.filter(e => filter === 'all' ||
+                (filter === 'auth' && e.type === 'AUTH') ||
+                (filter === 'problems' && (e.type === 'ERROR' || e.type === 'DISCONNECT' || (e.type === 'AUTH' && e.status >= 400))));
+            out.textContent = rows.slice(-120).map(e => `[${e.time.slice(11,19)}] Account ${e.account}${e.bot == null ? '' : ' Bot ' + e.bot} · ${e.type}${e.phase ? ' ' + e.phase : ''}${e.status ? ' HTTP '+e.status : ''}: ${e.message}${e.code !== undefined ? ' (code '+e.code+')' : ''}${e.reason ? ' · '+e.reason : ''}`).join('\n') || 'No matching bot/login events yet';
             out.scrollTop = out.scrollHeight;
         }
         setStatus(bot, text) {
@@ -269,6 +285,16 @@
             if (!account?.getToken()) {
                 this.setStatus(bot, 'Sign in to Account ' + (bot.accountIndex + 1) + ' first');
                 return;
+            }
+            // OAuth tokens alone are not evidence of a valid Senpa account.
+            // Check the official account endpoint before sending the bot to a game server.
+            if (!account.snapshot().verified) {
+                const verified = await account.loadProfile();
+                if (!verified) {
+                    const detail = account.snapshot().error || 'Senpa account verification pending or rejected';
+                    this.setStatus(bot, 'Cannot connect: ' + detail);
+                    return;
+                }
             }
             const target = endpoint(main);
             if (!target) { this.setStatus(bot, 'Main server address unavailable'); return; }
@@ -352,11 +378,21 @@
                 if (!current()) return;
                 clearTimeout(bot.timeout); bot.client = null; bot.intent = null;
                 setTimeout(() => client.disposeProtocol?.(), 0);
-                this.botLog(bot, 'DISCONNECT', 'Bot connection closed', {code:client.lastCloseCode, reason:client.lastCloseReason});
+                const code = client.lastCloseCode;
+                const detail = code === 4101 ? 'Server explicitly reported a banned connection (4101).' :
+                    code === 4100 ? 'Server kicked this bot connection (4100).' :
+                    code === 4405 ? 'Server connection limit (4405).' :
+                    code === 4406 ? 'Server rejected session (4406); cause not confirmed.' :
+                    code === 4404 ? 'Server blocked proxy/VPN connection (4404).' :
+                    code ? 'Connection closed with code ' + code + '.' : 'Socket disconnected; no close code captured.';
+                this.botLog(bot, 'DISCONNECT', detail, {code, reason:client.lastCloseReason});
                 this.setStatus(bot, 'Disconnected');
                 setTimeout(() => {
                     if (bot.generation === attempt && !bot.client && client.lastCloseCode) this.setStatus(bot,
-                        client.lastCloseCode === 4405 ? 'Server connection limit reached (4405)' : client.lastCloseCode === 4406 ? 'Server rejected session (4406) · check account login and server policy' : 'Disconnected · code ' + client.lastCloseCode);
+                        client.lastCloseCode === 4101 ? 'Server reported connection banned (4101)' :
+                        client.lastCloseCode === 4405 ? 'Server connection limit reached (4405)' :
+                        client.lastCloseCode === 4406 ? 'Server rejected session (4406) · not proof of a ban' :
+                        'Disconnected · code ' + client.lastCloseCode);
                 }, 0);
             });
             this.setStatus(bot, 'Connecting…');
@@ -505,9 +541,10 @@
             panel.querySelector('[data-spawn]').onclick = () => this.bots.forEach(b => this.spawn(b.index));
             panel.querySelector('[data-stop]').onclick = () => this.disconnectAll();
             const logSection = document.createElement('section');
-            logSection.innerHTML = '<div class="bot-actions"><strong>BOT DIAGNOSTICS</strong><button type="button" data-bot-toggle>Show logs</button><button type="button" data-bot-export>Export</button><button type="button" data-bot-clear>Clear</button></div><pre data-bot-logs hidden style="white-space:pre-wrap;overflow:auto;max-height:240px;background:#07101d;color:#a5defa;border:1px solid #304155;padding:10px;font:11px/1.6 monospace"></pre>';
+            logSection.innerHTML = '<div class="bot-actions"><strong>BOT DIAGNOSTICS</strong><button type="button" data-bot-toggle>Show logs</button><button type="button" data-bot-export>Export</button><button type="button" data-bot-clear>Clear</button></div><label style="font-size:12px">Show <select data-bot-filter style="background:#172235;color:white;padding:5px;border:1px solid #42627d"><option value="all">Bot + login events</option><option value="auth">Account login only</option><option value="problems">Errors / disconnects only</option></select></label><pre data-bot-logs hidden style="white-space:pre-wrap;overflow:auto;max-height:240px;background:#07101d;color:#a5defa;border:1px solid #304155;padding:10px;font:11px/1.6 monospace"></pre><small>No passwords, tokens, cookies or API response bodies are collected.</small>';
             panel.insertBefore(logSection, panel.querySelector('[data-cards]'));
             const logs = logSection.querySelector('[data-bot-logs]');
+            logSection.querySelector('[data-bot-filter]').onchange = () => this.paintBotLogs();
             logSection.querySelector('[data-bot-toggle]').onclick = e => { logs.hidden = !logs.hidden; e.currentTarget.textContent = logs.hidden ? 'Show logs' : 'Hide logs'; this.paintBotLogs(); };
             logSection.querySelector('[data-bot-clear]').onclick = () => {this.botLogs.length=0; this.paintBotLogs();};
             logSection.querySelector('[data-bot-export]').onclick = () => {
@@ -515,7 +552,7 @@
                 const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href=url; link.download='eon-bot-diagnostics.json'; link.click(); setTimeout(()=>URL.revokeObjectURL(url), 1000);
             };
             const accountSection = document.createElement('section');
-            accountSection.innerHTML = '<strong>Account Manager (10 separate logins)</strong><small>Login each account through Senpa official Facebook / Discord authentication. Account sessions use separate local keys. Facebook cookies remain shared in one browser. Server limits still apply.</small>';
+            accountSection.innerHTML = '<strong>Account Manager (10 account slots)</strong><small>Login each account through Senpa official Facebook / Discord authentication. Each account must pass Senpa verification before bot Connect. Browser cookies are shared; 10 slots do not guarantee 10 independent sessions. Server limits still apply.</small>';
             for (let i = 0; i < this.accounts.length; i++) {
                 const row = document.createElement('div');
                 row.dataset.accountRow = String(i);
