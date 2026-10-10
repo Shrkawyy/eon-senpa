@@ -1,0 +1,39 @@
+(function anonymous(
+) {
+
+(function () {
+    localStorage.setItem("eon_access_key", "local-test");
+
+    const originalFetch = window.fetch.bind(window);
+
+    window.fetch = function (input, init) {
+        const url = typeof input === "string" ? input : input?.url;
+
+        console.log("[FETCH]", url);
+
+        if (url && url.startsWith("https://eonauth.battlecell.io/")) {
+            console.log("[MOCKED]", url);
+
+            if (url.includes("/api/heartbeat")) {
+                return Promise.resolve(new Response(
+                    JSON.stringify({ shouldDisconnect: false }),
+                    { status: 200, headers: { "Content-Type": "application/json" } }
+                ));
+            }
+
+            return Promise.resolve(new Response(
+                JSON.stringify({ status: "KEY_ACCEPTED", ip: "127.0.0.1" }),
+                { status: 200, headers: { "Content-Type": "application/json" } }
+            ));
+        }
+
+        return originalFetch(input, init)
+            .catch(err => {
+                console.error("[FETCH FAILED]", url, err);
+                throw err;
+            });
+    };
+})();
+
+//# sourceURL=eon-senpa://inline-2.js
+})

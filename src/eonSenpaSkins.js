@@ -1,0 +1,362 @@
+(function (root) {
+    'use strict';
+    const API = 'https://api.senpa.io', BASE = API + '/u/';
+    const tabs = [
+        {id:'level', name:'Level', icon:'🏅'}, {id:'free', name:'Free', icon:'☺'},
+        {id:'mine', name:'My Skins', icon:'◉'}, {id:'favorites', name:'Favorites', icon:'★'},
+        {id:'submit', name:'Submit', icon:'＋'}
+    ];
+    const fallback = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160"><circle cx="80" cy="80" r="78" fill="#252535"/><text x="80" y="94" text-anchor="middle" font-size="44" fill="#a1a1b5">?</text></svg>');
+    function levelFromExp(experience) {
+        const exp = Math.max(0, Number(experience) || 0), early = [0, 50, 125, 250, 500];
+        for (let level = 1; level < 100; level++) {
+            const required = level <= 4 ? early[level] : 50 * level * (level + 1) - 500;
+            if (exp < required) return level;
+        }
+        return 100;
+    }
+    function skinURL(route) {
+        if (typeof route !== 'string' || !route) return '';
+        try {
+            const url = new URL(/^https?:\/\//i.test(route) ? route : BASE + route);
+            return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : '';
+        } catch { return ''; }
+    }
+    function rawRoute(url) { return String(url || '').startsWith(BASE) ? url.slice(BASE.length) : url || ''; }
+    const localCache = [{}, {}];
+    function localSkin(app, cell) {
+        const client = app.gameConnection.current, slot = cell.clientOrigin?.index;
+        if (app.replayManager?.isReplay || client?.isReplay || ![0, 1].includes(slot) ||
+            client?.tabs[slot] !== cell.clientOrigin) return '';
+        const value = app.player[slot === 0 ? 'skin1' : 'skin2'];
+        if (typeof value !== 'string' || !/^https?:\/\//i.test(value.trim())) return '';
+        const cached = localCache[slot];
+        if (cached.value !== value) { cached.value = value; cached.url = skinURL(value.trim()); }
+        return cached.url;
+    }
+    function decodeImage(url) {
+        return new Promise((resolve, reject) => {
+            const image = new root.Image();
+            const timer = setTimeout(() => { image.src = ''; done(new Error('Skin image timed out.')); }, 15000);
+            function done(error) { clearTimeout(timer); image.onload = image.onerror = null; error ? reject(error) : resolve(image); }
+            image.crossOrigin = 'anonymous'; image.referrerPolicy = 'no-referrer';
+            image.onload = () => image.naturalWidth && image.naturalHeight ? done() : done(new Error('Empty skin image.'));
+            image.onerror = () => done(new Error('Could not load skin image.'));
+            image.src = url;
+        });
+    }
+    async function loadImage(url) {
+        try { return await decodeImage(url); }
+        catch (error) {
+            if (!root.EonAssets?.fetchSkin || !/^https?:\/\//i.test(url)) throw error;
+            // Load a Blob through Tampermonkey when the image host omits CORS.
+            // A plain cross-origin Image would taint the game/replay canvas.
+            const blob = await root.EonAssets.fetchSkin(url), local = URL.createObjectURL(blob);
+            try { return await decodeImage(local); }
+            finally { URL.revokeObjectURL(local); }
+        }
+    }
+    function pageQuery(tab, page, search) {
+        return {type:tab, page:tab === 'free' ? page - 1 : page, ...(search ? {query:search} : {})};
+    }
+    function profileIndex(app) { return Math.max(0, Math.min(9, (Number(app.lobby.currentProfile) || 1) - 1)); }
+    function element(tag, className, text) {
+        const el = document.createElement(tag); if (className) el.className = className;
+        if (text !== undefined) el.textContent = text; return el;
+    }
+    class Library {
+        constructor(app) {
+            this.app = app; this.account = root.SenpaAccount; this.tab = 'level'; this.page = 1; this.search = '';
+            this.slot = 0; this.isOpen = false; this.generation = 0; this.busy = false; this.sessionEpoch = 0;
+            this.overlay = document.getElementById('skinsOverlay'); this.content = document.getElementById('skinsContent');
+            this.nav = document.getElementById('skinsCategories'); this.title = document.getElementById('skinsTitle');
+            this.viewPage = 0;
+            this.resizeObserver = new ResizeObserver(() => {
+                if (this.isOpen && this.tab !== 'submit' && this.rows) this.renderRows();
+            });
+            this.resizeObserver.observe(this.content);
+            this.uploadState = 'idle'; this.uploadError = '';
+            document.getElementById('btnCloseSkins').onclick = () => this.hide();
+            this.overlay.onclick = event => { if (event.target === this.overlay) this.hide(); };
+            for (const [selector, slot] of [['.skin-left', 0], ['.skin-right', 1]]) {
+                const preview = document.querySelector(selector);
+                preview.onclick = () => this.show(slot);
+                preview.onkeydown = event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault(); event.stopPropagation(); if (!event.repeat) this.show(slot);
+                    }
+                };
+            }
+            document.addEventListener('keydown', event => {
+                if (event.key === 'Escape' && this.isOpen) { event.preventDefault(); event.stopImmediatePropagation(); this.hide(); }
+            }, true);
+            this.account.subscribe(state => {
+                if (!state.signedIn || (!state.account && this.profile)) {
+                    this.sessionEpoch++; this.hide(); this.uploadState = 'idle';
+                }
+                this.profile = state.account;
+            });
+        }
+        async request(path, {query, json, body, method = 'GET', signal} = {}, retry = true) {
+            const url = new URL(path, API);
+            if (url.origin !== API || !/^\/(skins\/|account\/save-profile$)/.test(url.pathname)) throw Error('Invalid skin service endpoint.');
+            for (const [key, value] of Object.entries(query || {})) url.searchParams.set(key, String(value));
+            const token = this.account.getToken();
+            if (!token) throw Error('Sign in to your Senpa account to use skins.');
+            const controller = new AbortController(), abort = () => controller.abort();
+            if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, {once:true});
+            const timeout = setTimeout(abort, 30000);
+            try {
+                const response = await root.fetch(url.href, {method, credentials:'omit', signal:controller.signal,
+                    headers:{Authorization:'Bearer ' + token, ...(json !== undefined ? {'Content-Type':'application/json'} : {})},
+                    body:json !== undefined ? JSON.stringify(json) : body});
+                if (token !== this.account.getToken()) throw Error('The account session changed. Try again.');
+                if (response.status === 401 && retry) {
+                    if (await this.account.refresh()) return this.request(path, {query, json, body, method, signal}, false);
+                }
+                const data = response.status === 204 ? {} : await response.json();
+                if (token !== this.account.getToken()) throw Error('The account session changed. Try again.');
+                if (!response.ok || data?.error || data?.success === false) throw Error(data?.message || data?.error || 'Skin service HTTP ' + response.status);
+                return data;
+            } catch (error) {
+                if (error.name === 'AbortError' && !signal?.aborted) throw Error('The skin service timed out. Try again.');
+                throw error;
+            } finally { clearTimeout(timeout); signal?.removeEventListener('abort', abort); }
+        }
+        async show(slot = 0) {
+            if (![0, 1].includes(slot) || this.busy) return;
+            if (!this.account.getToken()) { this.app.toasts.show('Sign in to your Senpa account to open the skin library.', 'info', 4000); return; }
+            this.slot = slot; this.isOpen = true; this.uploadState = 'idle'; this.uploadError = '';
+            this.overlay.style.display = 'flex'; this.overlay.classList.add('fade-in');
+            this.title.textContent = 'Skin Library · Player ' + (slot + 1);
+            document.getElementById('btnCloseSkins').focus();
+            this.renderTabs(); this.content.replaceChildren(element('p', 'skins-status', 'Loading account…'));
+            if (!this.account.snapshot().account) await this.account.loadProfile();
+            if (!this.isOpen) return;
+            this.profile = this.account.snapshot().account;
+            if (!this.profile) { this.showError('Could not load your account. Refresh your Senpa account and try again.'); return; }
+            this.renderTab();
+        }
+        hide() {
+            this.isOpen = false; this.generation++; clearTimeout(this.searchTimer); this.listController?.abort();
+            this.overlay.classList.remove('fade-in'); this.overlay.style.display = 'none';
+        }
+        renderTabs() {
+            this.nav.replaceChildren();
+            for (const tab of tabs) {
+                const button = element('button', 'skin-tab' + (this.tab === tab.id ? ' active' : ''), tab.icon + ' ' + tab.name);
+                button.dataset.skinTab = tab.id; button.disabled = this.busy;
+                button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(this.tab === tab.id));
+                button.onclick = () => {
+                    if (this.tab === tab.id) return;
+                    this.tab = tab.id; this.page = 1; this.search = ''; clearTimeout(this.searchTimer);
+                    if (tab.id === 'submit') { this.uploadState = 'idle'; this.uploadError = ''; }
+                    this.listController?.abort(); this.generation++; this.renderTabs(); this.renderTab();
+                };
+                this.nav.append(button);
+            }
+        }
+        renderTab() {
+            this.content.replaceChildren(); this.rows = null;
+            this.content.dataset.catalog = String(this.tab !== 'submit');
+            if (this.tab === 'submit') { this.renderSubmit(); return; }
+            if (this.tab !== 'level') {
+                const search = element('input', 'skin-search'); search.type = 'search'; search.placeholder = 'Search . . .';
+                search.setAttribute('aria-label', 'Search skins'); search.value = this.search;
+                search.oninput = () => {
+                    this.search = search.value; this.page = 1; clearTimeout(this.searchTimer);
+                    this.generation++; this.listController?.abort();
+                    this.searchTimer = setTimeout(() => this.loadList(), 300);
+                };
+                this.content.append(search);
+            }
+            this.status = element('div', 'skins-status'); this.status.setAttribute('role', 'status');
+            this.grid = element('div', 'native-skin-grid'); this.pagination = element('nav', 'skins-pagination');
+            this.pagination.setAttribute('aria-label', 'Skin pages');
+            this.content.append(this.status, this.grid, this.pagination); this.loadList();
+        }
+        async loadList(viewPage = 0) {
+            this.viewPage = viewPage;
+            const generation = ++this.generation; this.listController?.abort(); this.listController = new AbortController();
+            this.status.textContent = 'Loading skins…'; this.grid.replaceChildren(); this.pagination.replaceChildren();
+            try {
+                const data = await this.request('/skins/' + (this.search.trim() ? 'search' : 'list'),
+                    {query:pageQuery(this.tab, this.page, this.search), signal:this.listController.signal});
+                if (generation !== this.generation || !this.isOpen) return;
+                if (!Array.isArray(data.results)) throw Error('The skin service returned an invalid list.');
+                this.rows = data.results.filter(row => row && typeof row.skin_route === 'string')
+                    .sort((a, b) => (parseInt(a.requirement_data) || 0) - (parseInt(b.requirement_data) || 0));
+                this.renderRows();
+            } catch (error) {
+                if (generation !== this.generation || !this.isOpen || error.name === 'AbortError') return;
+                this.showError(error.message, this.status);
+            }
+        }
+        fitGrid() {
+            const columns = Math.max(1, Math.min(5, Math.floor((this.grid.clientWidth + 10) / 140)));
+            const capacity = Math.min(10, columns * Math.max(1, Math.floor((this.grid.clientHeight + 10) / 144)));
+            const rows = Math.ceil(capacity / columns);
+            const size = Math.max(16, Math.floor(Math.min(116,
+                (this.grid.clientWidth - (columns - 1) * 10) / columns - 18,
+                (this.grid.clientHeight - (rows - 1) * 10) / rows - 80)));
+            this.grid.style.setProperty('--skin-columns', columns);
+            this.grid.style.setProperty('--skin-rows', rows);
+            this.grid.style.setProperty('--skin-image-size', size + 'px');
+            return capacity;
+        }
+        renderRows() {
+            const favorites = new Set(this.profile?.favorites || []);
+            const rows = this.tab === 'favorites' ? this.rows.filter(row => favorites.has(row.id)) : this.rows;
+            this.status.replaceChildren(); this.grid.replaceChildren();
+            const capacity = this.fitGrid(), views = Math.max(1, Math.ceil(rows.length / capacity));
+            this.viewPage = this.viewPage < 0 ? views - 1 : Math.min(this.viewPage, views - 1);
+            if (!rows.length) this.status.textContent = 'No skins found.';
+            for (const row of rows.slice(this.viewPage * capacity, (this.viewPage + 1) * capacity)) {
+                const card = element('article', 'native-skin-card'); card.dataset.skinId = row.id;
+                const url = skinURL(row.skin_route), selected = this.app.player['skin' + (this.slot + 1)] === url;
+                const locked = Number(row.requirement_type) === 1 && levelFromExp(this.profile?.experience) < parseInt(row.requirement_data);
+                const pending = row.skin_name === 'Pending';
+                if (selected) card.classList.add('equipped');
+                const image = element('img'); image.src = url || fallback; image.alt = row.skin_name || 'Skin';
+                image.loading = 'lazy'; image.draggable = false; image.onerror = () => { image.onerror = null; image.src = fallback; };
+                const title = element('div', 'native-skin-title', row.skin_name || 'Unnamed skin');
+                title.title = row.skin_name || 'Unnamed skin';
+                const button = element('button', 'skin-equip' + (selected ? ' unequip' : ''),
+                    locked ? '🔒 Level ' + row.requirement_data : pending ? '🔒 Pending' : selected ? 'Unequip' : 'Equip');
+                button.disabled = this.busy || locked || pending || !url;
+                button.onclick = () => this.equip(row, selected);
+                card.append(image, title, button);
+                if (this.tab === 'free' || this.tab === 'favorites') {
+                    const favorite = favorites.has(row.id), remove = this.tab === 'favorites';
+                    const star = element('button', 'skin-favorite' + (favorite ? ' selected' : ''), remove ? '×' : '★');
+                    star.title = favorite ? 'Remove favorite' : 'Add favorite';
+                    star.setAttribute('aria-label', star.title); star.setAttribute('aria-pressed', String(favorite)); star.disabled = this.busy;
+                    star.onclick = () => this.favorite(row.id, favorite); card.append(star);
+                }
+                this.grid.append(card);
+            }
+            this.pagination.replaceChildren();
+            const serverPages = this.tab !== 'level' && !this.search.trim();
+            if (views > 1) {
+                const add = (label, text, direction, disabled) => {
+                    const button = element('button', '', text); button.setAttribute('aria-label', label);
+                    button.disabled = disabled || this.busy;
+                    button.onclick = () => {
+                        const next = this.viewPage + direction;
+                        if (next >= 0 && next < views) { this.viewPage = next; this.renderRows(); }
+                        else { this.page += direction; this.loadList(direction < 0 ? -1 : 0); }
+                    };
+                    this.pagination.append(button);
+                };
+                add('Previous skins', '‹', -1, this.viewPage === 0 && (!serverPages || this.page === 1));
+                this.pagination.append(element('span', 'skin-page-label',
+                    (serverPages ? this.page + ' · ' : '') + (this.viewPage + 1) + ' / ' + views));
+                add('Next skins', '›', 1, this.viewPage === views - 1 && (!serverPages || this.rows.length < 10));
+            } else if (serverPages) {
+                const add = (text, page, disabled = false) => {
+                    const button = element('button', '', text); button.disabled = disabled || this.busy;
+                    button.onclick = () => { this.page = page; this.loadList(); }; this.pagination.append(button);
+                };
+                if (this.page > 1) { add('«', 1); add(String(this.page - 1), this.page - 1); }
+                add(String(this.page), this.page, true);
+                add(String(this.page + 1), this.page + 1, this.rows.length < 10);
+                add(String(this.page + 2), this.page + 2, this.rows.length < 10);
+            }
+        }
+        showError(message, parent = this.content) {
+            parent.replaceChildren(element('p', 'skins-error', message));
+            const retry = element('button', 'skins-retry', 'Try again');
+            retry.onclick = () => this.show(this.slot); parent.append(retry);
+        }
+        setBusy(value) {
+            this.busy = value; this.renderTabs();
+            if (this.isOpen && this.tab !== 'submit' && this.rows) this.renderRows();
+        }
+        async equip(row, remove) {
+            if (this.busy) return;
+            if (!this.profile?.skin_profiles) { this.showError('Could not load your skin profiles. Try again.', this.status); return; }
+            const slot = this.slot, profile = profileIndex(this.app), epoch = this.sessionEpoch;
+            const routes = [this.app.player.skin1, this.app.player.skin2].map((url, index) =>
+                String(url || '').startsWith(BASE) ? rawRoute(url) :
+                this.profile.skin_routes?.[this.profile.skin_profiles[profile]?.['skin_id_' + (index + 1)]] || '');
+            routes[slot] = remove ? '' : row.skin_route;
+            this.setBusy(true); let failure;
+            try {
+                await this.request('/account/save-profile', {method:'POST', json:{profile_id:profile, profile:{route1:routes[0], route2:routes[1]}}});
+                if (epoch !== this.sessionEpoch) return;
+                // The other player's current skin is carried unchanged in the native profile request.
+                if (profileIndex(this.app) === profile) this.app.lobby.setSkin(slot + 1, remove ? '' : skinURL(row.skin_route));
+                else {
+                    const key = 'eon_profile_' + (profile + 1), saved = JSON.parse(localStorage.getItem(key) || '{}');
+                    saved[slot === 0 ? 'primarySkin' : 'secondarySkin'] = remove ? '' : skinURL(row.skin_route);
+                    localStorage.setItem(key, JSON.stringify(saved));
+                }
+                this.hide(); await this.account.loadProfile();
+            } catch (error) { failure = error.message; }
+            finally {
+                this.setBusy(false);
+                if (failure && this.isOpen) this.showError(failure, this.status);
+            }
+        }
+        async favorite(id, remove) {
+            if (this.busy || !Number.isInteger(id)) return;
+            this.setBusy(true); let failure;
+            try {
+                await this.request('/skins/favorite/' + id, {method:remove ? 'DELETE' : 'POST'});
+                const favorites = new Set(this.profile?.favorites || []);
+                remove ? favorites.delete(id) : favorites.add(id);
+                this.profile = {...this.profile, favorites:[...favorites]};
+                await this.account.loadProfile();
+            } catch (error) { failure = error.message; }
+            finally {
+                this.setBusy(false);
+                if (failure && this.isOpen) this.showError(failure, this.status);
+            }
+        }
+        renderSubmit() {
+            this.content.replaceChildren();
+            const panel = element('section', 'skin-submit');
+            panel.append(element('h3', '', 'Submit A Skin'), element('p', '', 'Submit a custom skin to be approved. Approved skins will become freely available to all players!'),
+                element('p', 'skin-submit-note', 'You can only have a limited number of skins pending approval at once.'));
+            if (this.uploadState === 'uploading') panel.append(element('p', 'skins-status', 'Uploading…'));
+            else if (this.uploadState === 'done') {
+                panel.append(element('h3', '', 'Done!'), element('p', '', "Check My Skins periodically to see your approved submissions."));
+            } else if (this.uploadState === 'pending') {
+                panel.append(element('h3', '', 'Pending'), element('p', '', 'You already have the maximum number of skins pending moderation.'));
+            } else if (this.uploadState === 'error') panel.append(element('p', 'skins-error', this.uploadError || 'There was a problem uploading.'));
+            if (this.uploadState === 'idle') {
+                const input = element('input', 'skin-upload-file'); input.type = 'file'; input.accept = 'image/png,image/jpeg'; input.hidden = true;
+                input.onchange = () => { const file = input.files[0]; if (file) this.upload(file); };
+                const browse = element('button', 'skin-upload-button', 'Browse'); browse.onclick = () => input.click(); panel.append(input, browse);
+            } else if (['done', 'error'].includes(this.uploadState)) {
+                const retry = element('button', 'skin-upload-button', this.uploadState === 'done' ? 'Start Over' : 'Try Again');
+                retry.onclick = () => { this.uploadState = 'idle'; this.renderSubmit(); }; panel.append(retry);
+            }
+            this.content.append(panel);
+        }
+        async upload(file) {
+            if (this.busy) return;
+            const epoch = this.sessionEpoch;
+            if (!['image/png', 'image/jpeg'].includes(file.type)) {
+                this.uploadState = 'error'; this.uploadError = 'Choose a PNG or JPEG image.'; this.renderSubmit(); return;
+            }
+            this.uploadState = 'uploading'; this.setBusy(true); this.renderSubmit();
+            try {
+                const body = new FormData(); body.append('image_file', file);
+                const result = await this.request('/skins/fallback-upload', {method:'POST', body});
+                if (typeof result.link !== 'string' || !/^https?:\/\//i.test(result.link)) throw Error('The upload service did not return an image.');
+                const submitted = await this.request('/skins/submit', {method:'POST', json:{image:result.link}});
+                if (!submitted.success) throw Error(submitted.message || 'There was a problem submitting the skin.');
+                this.uploadState = 'done';
+            } catch (error) {
+                this.uploadState = /pending/i.test(error.message) ? 'pending' : 'error'; this.uploadError = error.message;
+            } finally {
+                if (epoch !== this.sessionEpoch) this.uploadState = 'idle';
+                this.setBusy(false);
+                if (this.isOpen && this.tab === 'submit') this.renderSubmit();
+            }
+        }
+    }
+    root.EonSenpaSkins = {Library, tabs, levelFromExp, skinURL, rawRoute, pageQuery, profileIndex, localSkin, loadImage};
+})(window);
+

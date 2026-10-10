@@ -1,0 +1,159 @@
+(function anonymous(
+) {
+(function (root) {
+    'use strict';
+    const typing = node => !!node && (['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName) || node.isContentEditable);
+    const summary = values => {
+        if (!values.length) return {count:0, medianMs:null, p95Ms:null, maxMs:null};
+        const sorted = values.slice().sort((a,b) => a-b), at = p => +sorted[Math.min(sorted.length-1, Math.floor(sorted.length*p))].toFixed(2);
+        return {count:values.length, medianMs:at(.5), p95Ms:at(.95), maxMs:at(1)};
+    };
+    class Controls {
+        constructor(app) {
+            this.app = app; this.timer = null; this.disposed = false; this.probe = null; this.lastReport = null;
+            this.tick = this.tick.bind(this);
+            this.onFocus = () => { this.app.stage.nextSendCursorTime = 0; this.schedule(0); };
+            this.onVisibility = () => { if (document.hidden) this.cancelFeed(); else this.onFocus(); };
+            this.onTyping = event => { if (typing(event.target)) this.cancelFeed(); };
+            root.addEventListener('focus', this.onFocus);
+            document.addEventListener('visibilitychange', this.onVisibility);
+            document.addEventListener('focusin', this.onTyping);
+            root.addEventListener('pagehide', () => this.dispose(), {once:true});
+            const draw = app.stage.draw, controller = this;
+            app.stage.draw = function (...args) { const result = draw.apply(this, args); controller.frameDrawn(); return result; };
+            this.schedule(0);
+        }
+        interval() { return Math.max(40, Number(this.app.stage.settings.sendCursorInterval) || 40); }
+        canAim() {
+            const app = this.app, client = app.gameConnection.current;
+            return !document.hidden && !app.lobby.isVisible && !app.settingsMenu.isVisible && !app.replayManager?.isReplay &&
+                client?.isConnected && client.authCompleted && !client.isReplay && (client.hasAlivePlayers || client.spectate.enabled);
+        }
+        schedule(delay) {
+            if (this.disposed) return;
+            clearTimeout(this.timer); this.timer = setTimeout(this.tick, Math.max(1, Math.ceil(delay)));
+        }
+        tick() {
+            if (this.disposed) return;
+            const stage = this.app.stage, now = performance.now();
+            if (!this.canAim()) { this.schedule(100); return; }
+            if (now >= stage.nextSendCursorTime) {
+                const deadline = stage.nextSendCursorTime, interval = this.interval();
+                stage.updateMouseWorldPosition();
+                stage.sendCursorPosition();
+                // Keep the 25Hz phase through small timer delays instead of
+                // accumulating them. Skip a late tick; do not send a catch-up burst.
+                stage.nextSendCursorTime = now-deadline >= interval/2 ? now+interval : deadline+interval;
+            }
+            this.schedule(stage.nextSendCursorTime - performance.now());
+        }
+        pointer(event) {
+            if (this.probe) this.probe.pointer = this.timestamp(event);
+            // If the cadence is already due, use this input event instead of
+            // waiting for either the timer callback or the next animation frame.
+            if (this.canAim() && performance.now() >= this.app.stage.nextSendCursorTime) this.tick();
+        }
+        cancelFeed() {
+            this.app.input.states.macroFeed = false;
+            this.app.gameConnection.current?.stopAllFeeding();
+        }
+        timestamp(event) {
+            const now = performance.now(), stamp = Number(event?.timeStamp);
+            return Number.isFinite(stamp) && stamp >= 0 && stamp <= now && now-stamp < 10000 ? stamp : now;
+        }
+        noteInput(event, action, down) {
+            if (down) this.app.replayManager?.recordInput?.(event, action);
+            if (!this.probe) return;
+            const kind = action === 'macroFeed' ? (down ? 'feedStart' : 'feedStop') :
+                down && ['split','doubleSplit','tripleSplit','maxSplit'].includes(action) ? 'split' : null;
+            if (kind) this.probe.pending = {kind, at:this.timestamp(event)};
+        }
+        actionSent(kind) {
+            const probe = this.probe, pending = probe?.pending;
+            if (pending?.kind === kind) { this.add(kind, performance.now()-pending.at); probe.pending = null; }
+        }
+        cursorSent(client, now) {
+            if (!this.probe || client !== this.app.gameConnection.current) return;
+            const p = this.probe;
+            if (p.lastCursor !== null) this.add('cursorInterval', now-p.lastCursor);
+            p.lastCursor = now;
+            if (p.pointer !== null) { this.add('pointerToSend', now-p.pointer); p.pointer = null; }
+        }
+        worldReceived(client, now) {
+            if (!this.probe || client.isReplay || client !== this.app.gameConnection.current) return;
+            const p = this.probe;
+            if (p.lastWorld !== null) this.add('worldInterval', now-p.lastWorld);
+            p.lastWorld = now; p.unpaintedWorld = now;
+        }
+        frameDrawn() {
+            const p = this.probe;
+            if (p?.unpaintedWorld !== null && p?.unpaintedWorld !== undefined && this.canAim()) {
+                this.add('receiveToDraw', performance.now()-p.unpaintedWorld); p.unpaintedWorld = null;
+            }
+        }
+        add(kind, value) {
+            const list = this.probe?.samples[kind];
+            if (list && Number.isFinite(value) && value >= 0 && list.length < 4000) list.push(value);
+        }
+        startMeasurement(duration = 20000) {
+            const c = this.app.gameConnection.current;
+            if (!c?.isConnected || !c.authCompleted || c.isReplay || this.app.replayManager?.isReplay || !(c.hasAlivePlayers || c.spectate.enabled)) return false;
+            clearTimeout(this.probeTimer);
+            this.probe = {began:performance.now(), date:new Date().toISOString(), client:c, samples:{pointerToSend:[],feedStart:[],feedStop:[],split:[],cursorInterval:[],worldInterval:[],receiveToDraw:[]},
+                pointer:null,pending:null,lastCursor:null,lastWorld:null,unpaintedWorld:null};
+            this.probeTimer = setTimeout(() => this.finishMeasurement(), duration);
+            return true;
+        }
+        finishMeasurement() {
+            const p = this.probe; if (!p) return this.lastReport;
+            clearTimeout(this.probeTimer);
+            this.lastReport = {version:'1.6.1', startedAt:p.date, durationMs:Math.round(performance.now()-p.began),
+                connectionChanged:p.client !== this.app.gameConnection.current,
+                metrics:Object.fromEntries(Object.entries(p.samples).map(([key,values]) => [key,summary(values)])),
+                note:'Local input-to-send and packet-to-draw timings. Receive-to-draw is the next canvas draw call, not completion on the monitor or server command acknowledgement. Pointer samples are coalesced; no claim of command-to-server latency.'};
+            this.probe = null;
+            this.app.toasts.show('Control measurement ready in Settings → Game', 'info', 4000);
+            this.refreshPanel?.();
+            return this.lastReport;
+        }
+        renderPanel(container) {
+            const panel = document.createElement('div'); panel.className = 'setting-group'; panel.style.cssText = 'display:block;margin-top:14px';
+            const title = document.createElement('div'); title.className = 'setting-label'; title.textContent = 'Control measurement';
+            const description = document.createElement('p'); description.className = 'setting-desc'; description.textContent = 'Measure for 20 seconds while playing. Move, split and hold/release feed, then return here.';
+            const feedNote = document.createElement('p'); feedNote.className = 'setting-desc'; feedNote.textContent = 'Feeding starts and stops with your key. Its rate is controlled by the server.';
+            const start = document.createElement('button'); start.type = 'button'; start.id = 'control-measure-start'; start.textContent = 'Measure controls (20s)';
+            const status = document.createElement('pre'); status.id = 'control-measure-result'; status.style.cssText = 'white-space:pre-wrap;font-size:12px;line-height:1.6';
+            const save = document.createElement('button'); save.type = 'button'; save.textContent = 'Download measurement'; save.id = 'control-measure-save';
+            for (const button of [start,save]) button.style.cssText = 'padding:10px 14px;margin:8px 8px 4px 0;border:1px solid #22d3ee66;border-radius:6px;background:#11313b;color:#d7faff;cursor:pointer;font:inherit';
+            start.onclick = () => {
+                if (!this.startMeasurement()) { status.textContent = 'Play or spectate on a connected server first.'; return; }
+                this.app.settingsMenu.hide(); this.app.lobby.hide(); document.activeElement?.blur();
+                this.app.toasts.show('Measuring controls for 20 seconds', 'info', 3000); this.refreshPanel(); this.onFocus();
+            };
+            save.onclick = () => {
+                const url = URL.createObjectURL(new Blob([JSON.stringify(this.lastReport,null,2)], {type:'application/json'}));
+                const a = document.createElement('a'); a.href = url; a.download = 'senpa-controls-measurement.json'; a.click();
+                setTimeout(() => URL.revokeObjectURL(url),1000);
+            };
+            this.refreshPanel = () => {
+                if (!panel.isConnected) return;
+                start.disabled = !!this.probe; save.hidden = !this.lastReport;
+                if (this.probe) { status.textContent = 'Measurement running. Return after 20 seconds.'; return; }
+                if (!this.lastReport) { status.textContent = 'No measurement yet.'; return; }
+                const names = {pointerToSend:'Mouse → send',feedStart:'Feed press → send',feedStop:'Feed release → send',split:'Split press → send',cursorInterval:'Mouse send spacing',worldInterval:'Server update spacing',receiveToDraw:'Update received → next draw'};
+                status.textContent = Object.entries(this.lastReport.metrics).map(([key,s]) => names[key]+': '+(s.count ? `${s.medianMs}ms median · ${s.p95Ms}ms p95 · ${s.count} samples` : 'No samples')).join('\n') + '\nLocal timing; not server action acknowledgement.';
+            };
+            panel.append(title,description,feedNote,start,status,save); container.append(panel);
+            // renderGame attaches its section after this method returns.
+            queueMicrotask(() => this.refreshPanel?.());
+        }
+        dispose() {
+            this.disposed = true; clearTimeout(this.timer); clearTimeout(this.probeTimer); this.cancelFeed(); this.probe = null;
+            root.removeEventListener('focus',this.onFocus); document.removeEventListener('visibilitychange',this.onVisibility); document.removeEventListener('focusin',this.onTyping);
+        }
+    }
+    root.EonSenpaControls = {Controls, initialize(app) { if (!app.controls) app.controls = new Controls(app); }};
+})(window);
+
+//# sourceURL=eon-senpa://eonSenpaControls.js
+})

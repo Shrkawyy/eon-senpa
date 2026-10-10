@@ -1,0 +1,5 @@
+(function anonymous(
+) {
+window.EonSenpaInstall.beforeBoot('1.7.15');
+//# sourceURL=eon-senpa://inline-1.js
+})

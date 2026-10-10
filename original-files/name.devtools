@@ -1,0 +1,139 @@
+(function anonymous(
+) {
+(function(root){
+    'use strict';
+    const API='https://api.senpa.io';
+    const LIST='/store/reserved_names/list', PRICES='/store/pricelist', COLOR='/store/reserved_names/setColor';
+    function normalizeColor(value){
+        if(typeof value!=='string')return null;
+        const color=value.trim();
+        if(/^#[\da-f]{6}$/i.test(color))return color.toLowerCase();
+        if(/^#[\da-f]{3}$/i.test(color))return '#'+[...color.slice(1)].map(c=>c+c).join('').toLowerCase();
+        return null;
+    }
+    function colorPrice(row,price){
+        if(row.change_color_free)return 0;
+        if(price===null||price===undefined||price===''||!['number','string'].includes(typeof price))return null;
+        const n=Number(price);return Number.isFinite(n)&&n>=0?n:null;
+    }
+    async function request(path,{json,signal}={},retry=true){
+        if(![LIST,PRICES,COLOR].includes(path))throw Error('Invalid reserved-name endpoint.');
+        const account=root.SenpaAccount,token=account.getToken();if(!token)throw Error('Sign in to view your owned names.');
+        const url=API+path+(path===PRICES?'?type=reserved-names':'');
+        const controller=new AbortController(),abort=()=>controller.abort();
+        if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
+        const timer=setTimeout(abort,15000);
+        try{
+            const response=await root.fetch(url,{method:json===undefined?'GET':'POST',credentials:'omit',signal:controller.signal,
+                headers:{Authorization:'Bearer '+token,...(json===undefined?{}:{'Content-Type':'application/json'})},...(json===undefined?{}:{body:JSON.stringify(json)})});
+            if(token!==account.getToken())throw Error('Account session changed. Please try again.');
+            if(response.status===401&&retry&&await account.refresh())return request(path,{json,signal},false);
+            const data=response.status===204?{}:await response.json();
+            if(token!==account.getToken())throw Error('Account session changed. Please try again.');
+            if(!response.ok||data.error||data.success===false)throw Error(data.message||data.error||'Name service HTTP '+response.status);
+            return data;
+        }catch(error){
+            if(error.name==='AbortError'&&!signal?.aborted)throw Error('The name service timed out. Please try again.');
+            throw error;
+        }finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
+    }
+    function element(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=text;return e;}
+    function button(text,fn,className='owned-name-action'){const b=element('button',className,text);b.type='button';b.onclick=fn;return b;}
+    async function copyName(value){
+        try{if(root.navigator.clipboard?.writeText){await root.navigator.clipboard.writeText(value);return;}}catch{}
+        const input=element('textarea');input.value=value;input.readOnly=true;input.style.cssText='position:fixed;left:-10000px;top:0';
+        const focused=document.activeElement;document.body.append(input);input.select();
+        try{if(!document.execCommand('copy'))throw Error('Could not copy. Select the name and copy it manually.');}
+        finally{input.remove();focused?.focus();}
+    }
+    class Names {
+        constructor(app){
+            this.app=app;this.rows=[];this.drafts=new Map();this.epoch=0;this.generation=0;this.isOpen=false;this.busy=false;this.price=null;
+            this.launch=button('Owned names',()=>this.show());this.launch.id='senpa-owned-names';
+            document.querySelector('.senpa-account-buttons').append(this.launch);
+            this.overlay=element('div','owned-names-overlay');this.overlay.hidden=true;
+            this.dialog=element('section','owned-names-dialog');this.dialog.setAttribute('role','dialog');this.dialog.setAttribute('aria-modal','true');this.dialog.setAttribute('aria-labelledby','owned-names-title');
+            const header=element('header','owned-names-header'),title=element('h2','','Owned names');title.id='owned-names-title';
+            this.close=button('×',()=>this.hide(),'owned-names-close');this.close.setAttribute('aria-label','Close owned names');
+            header.append(title,this.close);this.balance=element('span','owned-names-balance');
+            this.body=element('div','owned-names-body');this.status=element('p','owned-names-status');this.status.setAttribute('role','status');this.status.setAttribute('aria-live','polite');
+            this.dialog.append(header,this.balance,element('p','owned-names-note','Click a name to copy it. Choose a color, then save it to your Senpa account.'),this.status,this.body);
+            this.overlay.append(this.dialog);document.body.append(this.overlay);
+            this.overlay.onclick=e=>{if(e.target===this.overlay)this.hide();};
+            for(const type of ['mousedown','mouseup','click','keydown','keyup'])this.overlay.addEventListener(type,e=>e.stopPropagation());
+            document.addEventListener('keydown',e=>{
+                if(!this.isOpen)return;
+                if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();this.hide();return;}
+                if(e.key==='Tab'){
+                    const focusable=[...this.dialog.querySelectorAll('button:not(:disabled),input:not(:disabled)')].filter(el=>el.offsetParent!==null),first=focusable[0],last=focusable.at(-1);
+                    if((e.shiftKey&&document.activeElement===first)||(!e.shiftKey&&document.activeElement===last)){e.preventDefault();(e.shiftKey?last:first)?.focus();}
+                }
+            },true);
+            root.SenpaAccount.subscribe(s=>{
+                if(!s.signedIn||(!s.account&&this.profile)){this.epoch++;this.hide();this.rows=[];this.drafts.clear();this.price=null;}
+                this.profile=s.account;this.updateBalance();
+            });
+        }
+        updateBalance(){this.balance.textContent=Number.isFinite(Number(this.profile?.coins))?'Coins: '+Number(this.profile.coins).toLocaleString():'Coins: —';}
+        async show(){
+            if(this.busy)return;
+            this.isOpen=true;this.overlay.hidden=false;this.close.focus();this.rows=[];this.drafts.clear();this.price=null;this.status.textContent='';
+            if(!root.SenpaAccount.getToken()){this.body.replaceChildren(element('p','owned-names-empty','Sign in to your Senpa account to view your owned names.'));return;}
+            await this.load();
+        }
+        hide(){const open=this.isOpen;this.isOpen=false;this.generation++;this.loadingController?.abort();this.overlay.hidden=true;if(open)this.launch.focus();}
+        async load(){
+            const generation=++this.generation,epoch=this.epoch;this.loadingController?.abort();this.loadingController=new AbortController();
+            this.body.replaceChildren(element('p','owned-names-empty','Loading owned names…'));this.status.textContent='';
+            const [list,prices]=await Promise.allSettled([request(LIST,{signal:this.loadingController.signal}),request(PRICES,{signal:this.loadingController.signal})]);
+            if(generation!==this.generation||epoch!==this.epoch||!this.isOpen)return;
+            if(list.status==='rejected'||!Array.isArray(list.value?.names)){
+                this.body.replaceChildren(element('p','owned-names-error',list.reason?.message||'The name service returned an invalid list.'),button('Retry',()=>this.load()));return;
+            }
+            this.rows=list.value.names.filter(row=>row&&typeof row.name==='string'&&(typeof row.id==='string'||Number.isSafeInteger(row.id)));
+            this.price=prices.status==='fulfilled'?prices.value?.pricelist?.['reserved-name-change-color']:null;
+            this.priceError=prices.status==='rejected'||colorPrice({change_color_free:false},this.price)===null;
+            this.render();
+        }
+        render(){
+            if(!this.isOpen)return;this.updateBalance();this.body.replaceChildren();
+            if(this.priceError){this.body.append(element('p','owned-names-error','Color-change pricing is unavailable. Free color changes and copying are still available.'),button('Reload prices',()=>this.load()));}
+            if(!this.rows.length){this.body.append(element('p','owned-names-empty','No reserved names yet.'));return;}
+            for(const row of this.rows){
+                const id=String(row.id),original=normalizeColor(row.color)||'#ffffff',draft=this.drafts.get(id)||original;
+                const card=element('article','owned-name-card');card.dataset.nameId=id;
+                const name=button(row.name,async()=>{
+                    const epoch=this.epoch;
+                    try{await copyName(row.name);if(epoch===this.epoch&&this.isOpen)this.status.textContent='Name copied!';}
+                    catch(error){if(epoch===this.epoch&&this.isOpen)this.status.textContent=error.message;}
+                },'owned-name-copy');name.title='Click to copy';name.style.color=draft;name.setAttribute('aria-label','Copy '+row.name);
+                const controls=element('div','owned-name-controls'),picker=element('input','owned-name-picker'),hex=element('input','owned-name-hex');
+                picker.type='color';picker.value=normalizeColor(draft)||original;picker.setAttribute('aria-label','Color for '+row.name);
+                hex.type='text';hex.value=draft;hex.maxLength=7;hex.spellcheck=false;hex.setAttribute('aria-label','Hex color for '+row.name);
+                const price=colorPrice(row,this.price),free=price===0;
+                const save=button(price===null?'Price unavailable':free?'Save free':'Save for '+price.toLocaleString()+' coins',()=>this.save(row,hex.value));
+                const update=()=>{const color=normalizeColor(hex.value);save.disabled=this.busy||!color||color===original||price===null;hex.setAttribute('aria-invalid',String(!color));if(color){picker.value=color;name.style.color=color;}};
+                picker.oninput=()=>{hex.value=picker.value;this.drafts.set(id,picker.value);update();};
+                hex.oninput=()=>{this.drafts.set(id,hex.value);update();};
+                picker.disabled=hex.disabled=this.busy;update();
+                controls.append(picker,hex,save);card.append(name,controls);this.body.append(card);
+            }
+            if(this.busy)for(const b of this.body.querySelectorAll('button'))b.disabled=true;
+        }
+        async save(row,value){
+            const color=normalizeColor(value);if(this.busy||!color||colorPrice(row,this.price)===null||!this.rows.includes(row))return;
+            const epoch=this.epoch;this.busy=true;this.status.textContent='Saving name color…';this.render();
+            try{
+                const data=await request(COLOR,{json:{name_id:row.id,color}});if(!data.success)throw Error('The color was not saved. Please try again.');
+                if(epoch!==this.epoch)return;
+                row.color=color;this.drafts.delete(String(row.id));this.status.textContent='Name color saved.';
+                await root.SenpaAccount.loadProfile();
+            }catch(error){if(epoch===this.epoch&&this.isOpen)this.status.textContent=error.message;}
+            finally{this.busy=false;if(epoch===this.epoch)this.render();}
+        }
+    }
+    root.EonSenpaNames={normalizeColor,colorPrice,request,Names,initialize(app){if(!app.ownedNames)app.ownedNames=new Names(app);}};
+})(window);
+
+//# sourceURL=eon-senpa://eonSenpaNames.js
+})

@@ -1,0 +1,130 @@
+(function(root){
+    'use strict';
+    // Wire format and defaults verified against Senpa main-BYcEhCon.js (2026-09-24).
+    const defaults=['Need backup!','Need a teammate!','Pop him!','We need to run!','Tricksplit!','Lets bait!','Split into me!','Feed Me!','Tank the virus!','Roger that!'];
+    const API='https://api.senpa.io';
+    const now=()=>root.performance.now();
+    function imageURL(value){try{const url=new URL(value,API+'/');return value&&/^https?:$/.test(url.protocol)&&!url.username&&!url.password?url.href:'';}catch{return '';}}
+    function slots(account){return Array.from({length:4},(_,i)=>account?.emoji_slots?.[i]||null);}
+    function normalize(key){return String(key||'').toLowerCase().replace(/^key(?=.$)/,'').replace(/^(digit|numpad)/,'').replace(/^space$/,' ').replace(/^shift(left|right)$/,'shift').replace(/^control(left|right)$/,'control').replace(/^alt(left|right)$/,'alt');}
+    function communication(action){return /^(emoji[1-4]|command(?:[1-9]|10))$/.test(action);}
+    function share(a,b){return communication(a)&&communication(b)&&a.startsWith('emoji')!==b.startsWith('emoji');}
+    function clearConflicts(input,action,key){for(const other of Object.keys(input.keybinds))if(other!==action&&normalize(input.keybinds[other])===normalize(key)&&!share(action,other))input.keybinds[other]='None';}
+    function migrate(input,saved){for(const action of Object.keys(input.keybinds))if(communication(action)&&!(action in saved)&&Object.entries(saved).some(([a,k])=>!communication(a)&&normalize(k)===normalize(input.keybinds[action])))input.keybinds[action]='None';}
+    function state(client){return client.emojiState||(client.emojiState={until:0,pendingUntil:0,cooldownMs:0});}
+    function sendEmoji(client,slot){
+        if(!client||client.isReplay||client.app.replayManager?.isReplay||!client.isConnected||!client.authCompleted||client.serverClientId==null||!(client.hasAlivePlayers??!client.isDead)||!Number.isInteger(slot)||slot<0||slot>3||!root.SenpaAccount?.getToken()||!slots(root.SenpaAccount.snapshot().account)[slot]?.image_url)return false;
+        const s=state(client),time=now();
+        if(time<s.until||time<s.pendingUntil)return true;
+        s.pendingUntil=time+1000;
+        client.sendMessage(Uint8Array.of(24,slot).buffer);return true;
+    }
+    function receive(client,buffer){
+        const view=new DataView(buffer);if(view.byteLength<8)return;
+        const id=view.getUint16(1,true),duration=view.getUint16(3,true),cooldown=view.getUint16(5,true),length=view.getUint8(7);
+        if(!length||view.byteLength<8+length)return;
+        let url='';for(let i=0;i<length;i++)url+=String.fromCharCode(view.getUint8(8+i));
+        url=imageURL(url);if(!url)return;
+        const owner=client.playerClients.get(id),time=now();
+        if(owner){owner.emojiUrl=url;owner.emojiStartedAt=time;owner.emojiUntil=time+duration;}
+        cache.get(url,time);
+        if(id===client.serverClientId&&!client.isReplay){const s=state(client);s.until=time+cooldown;s.cooldownMs=cooldown;s.pendingUntil=0;}
+    }
+    function sendChat(client,type,text,room=0){
+        if(!client||client.isReplay||client.app.replayManager?.isReplay||!client.isConnected||!client.authCompleted||client.clientId==null)return false;
+        let value=String(text||'').slice(0,255);if(/[\uD800-\uDBFF]$/.test(value))value=value.slice(0,-1);if(!value.trim())return false;
+        const bytes=new Uint8Array(4+value.length*2),view=new DataView(bytes.buffer);bytes[0]=40;bytes[1]=type===2?2:1;bytes[2]=room?1:0;bytes[3]=value.length;
+        for(let i=0;i<value.length;i++)view.setUint16(4+i*2,value.charCodeAt(i),true);
+        client.sendMessage(bytes.buffer);return true;
+    }
+    function commands(){try{const saved=JSON.parse(root.localStorage.getItem('eon_native_commands')||'[]');return defaults.map((s,i)=>typeof saved[i]==='string'?saved[i]:s);}catch{return defaults.slice();}}
+    function trigger(app,action){
+        if(!communication(action))return false;
+        if(app.lobby?.isVisible||app.settingsMenu?.isVisible||app.replayManager?.isReplay)return true;
+        const client=app.gameConnection.current;
+        if(action.startsWith('emoji')){
+            if(sendEmoji(client,Number(action.slice(5))-1))return true;
+            const key=normalize(app.input.keybinds[action]);
+            action=Object.keys(app.input.keybinds).find(a=>a.startsWith('command')&&normalize(app.input.keybinds[a])===key);
+        }
+        if(action)sendChat(client,2,commands()[Number(action.slice(7))-1],app.nativeChatRoom);
+        return true;
+    }
+    async function request(path,json,retry=true){
+        if(!/^\/emojis\/(?:\d+\/buy|slots)?$/.test(path))throw Error('Invalid emoji endpoint.');
+        const token=root.SenpaAccount.getToken();if(!token)throw Error('Sign in to use emojis.');
+        const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+        try{
+            const response=await root.fetch(API+path,{method:json===undefined?'GET':'POST',credentials:'omit',signal:controller.signal,headers:{Authorization:'Bearer '+token,...(json===undefined?{}:{'Content-Type':'application/json'})},...(json===undefined?{}:{body:JSON.stringify(json)})});
+            if(token!==root.SenpaAccount.getToken())throw Error('Account session changed.');
+            if(response.status===401&&retry&&await root.SenpaAccount.refresh())return request(path,json,false);
+            const data=response.status===204?{}:await response.json();
+            if(token!==root.SenpaAccount.getToken())throw Error('Account session changed.');
+            if(!response.ok||data.error||data.success===false)throw Error(data.message||data.error||'Emoji service HTTP '+response.status);
+            return data;
+        }finally{clearTimeout(timeout);}
+    }
+    class ImageCache{
+        constructor(){this.entries=new Map();this.lastSweep=0;}
+        get(url,time=now()){
+            url=imageURL(url);if(!url)return null;this.sweep(time);
+            let entry=this.entries.get(url);
+            if(entry?.error&&time-entry.lastUsed>60000){this.drop(url,entry);entry=null;}
+            if(!entry&&this.entries.size<96){
+                entry={frames:[],offsets:[],duration:0,lastUsed:time,loading:true,bytes:0};this.entries.set(url,entry);
+                this.load(url,entry).catch(()=>{for(const frame of entry.frames)frame.width=frame.height=0;entry.frames=[];entry.bytes=0;entry.error=true;entry.lastUsed=now();}).finally(()=>entry.loading=false);
+            }
+            if(entry&&!entry.error)entry.lastUsed=time;
+            return entry?.frames.length&&!entry.loading&&!entry.error?entry:null;
+        }
+        drop(url,entry){for(const frame of entry.frames){frame.width=frame.height=0;}this.entries.delete(url);}
+        sweep(time){
+            if(time-this.lastSweep<5000)return;this.lastSweep=time;
+            let bytes=0;for(const [url,e]of this.entries){if(!e.loading&&time-e.lastUsed>120000)this.drop(url,e);else bytes+=e.bytes;}
+            const sorted=[...this.entries].sort((a,b)=>a[1].lastUsed-b[1].lastUsed);
+            for(const [url,e]of sorted){if(this.entries.size<=32&&bytes<=64*1024*1024)break;if(!e.loading&&time-e.lastUsed>5000){bytes-=e.bytes;this.drop(url,e);}}
+        }
+        frame(entry,elapsed){const time=entry.duration>0?((elapsed%entry.duration)+entry.duration)%entry.duration:0;let i=entry.offsets.length-1;while(i>0&&entry.offsets[i]>time)i--;return entry.frames[i];}
+        blit(image,width,height,size){
+            const canvas=document.createElement('canvas');canvas.width=canvas.height=Math.max(1,Math.min(size,width,height));const ctx=canvas.getContext('2d'),crop=Math.min(width,height);
+            ctx.beginPath();ctx.arc(canvas.width/2,canvas.height/2,canvas.width/2,0,Math.PI*2);ctx.clip();ctx.drawImage(image,(width-crop)/2,(height-crop)/2,crop,crop,0,0,canvas.width,canvas.height);return canvas;
+        }
+        async load(url,entry){
+            const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+            let data,type;
+            try{const r=await root.fetch(url,{credentials:'omit',mode:'cors',signal:controller.signal});if(!r.ok)throw Error('Image unavailable');data=await r.arrayBuffer();type=r.headers.get('content-type')?.split(';')[0];if(data.byteLength>16*1024*1024)throw Error('Image too large');}finally{clearTimeout(timeout);}
+            const magic=new Uint8Array(data);if(magic[0]===71&&magic[1]===73&&magic[2]===70)type='image/gif';
+            if(root.ImageDecoder&&await root.ImageDecoder.isTypeSupported(type||'')){
+                const decoder=new root.ImageDecoder({data,type});
+                try{
+                    await decoder.tracks.ready;const count=decoder.tracks.selectedTrack.frameCount;if(!count||count>1000)throw Error('Invalid animation');
+                    const selected=new Set(Array.from({length:Math.min(32,count)},(_,i)=>Math.floor(i*count/Math.min(32,count))));let elapsed=0;
+                    for(let i=0;i<count;i++){
+                        const {image}=await decoder.decode({frameIndex:i});
+                        try{if(selected.has(i)){entry.offsets.push(elapsed);const frame=this.blit(image,image.displayWidth,image.displayHeight,count>1?192:256);entry.frames.push(frame);entry.bytes+=frame.width*frame.height*4;}
+                            const delay=(image.duration||100000)/1000;elapsed+=delay>=20?delay:100;
+                        }finally{image.close();}
+                    }
+                    entry.duration=elapsed;
+                }finally{decoder.close();}
+            }else{
+                const bitmap=await createImageBitmap(new Blob([data],{type}));
+                try{const frame=this.blit(bitmap,bitmap.width,bitmap.height,256);entry.frames.push(frame);entry.offsets=[0];entry.bytes=frame.width*frame.height*4;}finally{bitmap.close();}
+            }
+        }
+    }
+    const cache=new ImageCache();
+    function appearance(stage,cell){
+        const client=stage.app.gameConnection.current,owner=client?.playerClients.get(client.players.get(cell.playerId)?.clientId),time=now();
+        const active=owner&&!owner.isBot&&owner.emojiUntil>time&&!cell.flags.isFood&&!cell.flags.isEject&&!cell.flags.isVirus;
+        const scale=active?1-.03*Math.max(0,Math.min(1,(owner.emojiUntil-time)/400,(time-owner.emojiStartedAt)/400)):1;
+        return {owner,time,active,radius:cell.r*scale};
+    }
+    function draw(stage,cell,appearance){
+        if(!appearance.active)return;const {owner,time,radius}=appearance,entry=cache.get(owner.emojiUrl,time);if(!entry)return;
+        const ctx=stage.ctx;ctx.save();ctx.globalAlpha=cell.globalAlpha*Math.min(1,(owner.emojiUntil-time)/400);
+        ctx.drawImage(cache.frame(entry,time-owner.emojiStartedAt),cell.x-radius,cell.y-radius,radius*2,radius*2);ctx.restore();
+    }
+    root.EonSenpaEmotes={defaults,slots,normalize,communication,clearConflicts,migrate,state,sendEmoji,receive,sendChat,commands,trigger,request,imageURL,cache,appearance,draw,ImageCache};
+})(window);
+

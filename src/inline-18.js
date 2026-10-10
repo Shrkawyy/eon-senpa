@@ -1,0 +1,1 @@
+window.EonReplay.initialize(window.app); window.EonSenpaIntegration.initialize(window.app); window.EonSenpaEmotesUI.initialize(window.app); window.EonSenpaNames.initialize(window.app); window.EonSenpaControls.initialize(window.app); window.EonSenpaBots.initialize(window.app);

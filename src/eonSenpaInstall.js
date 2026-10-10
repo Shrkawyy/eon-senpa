@@ -1,0 +1,337 @@
+(function (root) {
+    'use strict';
+    // Only these application preferences cross the backup/import boundary. Account
+    // storage, tokens, cookies, protocol IDs and replay data are never enumerated.
+    const VERSION = '1.7.15';
+    const STATE_KEY = 'eon_install_state_v1';
+    const FORMAT = 'eon-senpa-settings';
+    const MAX_FILE = 128 * 1024, MAX_HISTORY = 3;
+    const KEYS = ['eon_settings', 'eon_keybinds', 'eon_playerInputs', 'eon_currentProfile', 'eon_native_commands', 'eon_bot_names',
+        ...Array.from({length: 10}, (_, i) => 'eon_profile_' + (i + 1))];
+    const BOOLS = new Set(('debugViewport adaptiveCellMotion showEatAnimation showVirusRange showNames showMass showNicknameStroke showMassStroke autoHideNames autoHideMass coloredNames coloredMass autoSwitchCells showMenuOnDeath showGlobalSkins showSkins showVanillaSkins showGifSkins showCellGradient showFood rainbowFood showMyNames showMyMass themeUseMultiboxCellColor themeShowBackgroundImage showCursorLines showGrid showBorder showChat chatShowPlayerId chatUseCellColor showMinimap showStats showLeaderboard showHUD').split(' '));
+    const NUMBERS = new Set(('pixelDensityFactor sendCursorInterval cacheCleanupInterval cellAnimationSpeed cellSizeAnimationSpeed cellEatAnimationSpeed cellSpawnAnimationSpeed cellsTransparency virusTransparency cellGradientStrength cameraSpeed zoomSpeed themeBorderWidth themeMultiboxRingWidth macroFeedInterval minimapSize').split(' '));
+    const COLORS = new Set(('virusColor virusStrokeColor virusRangeColor foodColor themeBackgroundColor themeGridColor themeBorderColor textNicknameColor textMassColor myNicknameColor myMassColor themeMultiboxRingColor themeMultiboxRingColorInactive themeMultiboxCellColor themeMultiboxCellColorInactive themeCursorLinesColor leaderboardMassColor chatNickColor chatMessageColor chatCommandColor').split(' '));
+    const BINDS = new Set(('macroFeed split doubleSplit tripleSplit maxSplit switchPlayer toggleSpectateMode saveReplay toggleBots toggleBotMode toggleBotSplit toggleBotFeed toggleBotRespawn pause toggleSkins clearChat toggleChat toggleMinimap toggleStats toggleLeaderboard toggleHUD toggleMyNames toggleMyMass emoji1 emoji2 emoji3 emoji4 command1 command2 command3 command4 command5 command6 command7 command8 command9 command10 sendWave').split(' '));
+    const PROFILE_FIELDS = ['primaryNickname', 'primarySkin', 'secondarySkin', 'lastClanTag'];
+    const NUMBER_RANGES = {pixelDensityFactor:[.25,4], cameraSpeed:[1,30], zoomSpeed:[.79,1],
+        minimapSize:[150,500], cellsTransparency:[20,100], virusTransparency:[20,100],
+        cellGradientStrength:[1,3], themeBorderWidth:[2,200], themeMultiboxRingWidth:[2,50]};
+    const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+    const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+    function requireObject(value, name) {
+        if (!object(value) || Object.keys(value).length > 256) throw Error(name + ' must be a small JSON object.');
+        return value;
+    }
+    function string(value, name, max = 2048) {
+        if (typeof value !== 'string' || value.length > max || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)) throw Error('Invalid ' + name + '.');
+        return value;
+    }
+    function url(value, name, socket = false) {
+        string(value, name);
+        if (!value) return '';
+        let parsed;
+        try { parsed = new URL(value); } catch { throw Error('Invalid ' + name + ' URL.'); }
+        if (!(socket ? /^wss?:$/ : /^https?:$/).test(parsed.protocol) || parsed.username || parsed.password ||
+            [...parsed.searchParams.keys()].some(key => /token|auth|secret|password|credential|cookie|session|api.?key/i.test(key))) {
+            throw Error(name + ' must be a public URL without credentials.');
+        }
+        return value;
+    }
+    function settings(value) {
+        requireObject(value, 'Settings');
+        const out = {};
+        for (const [key, val] of Object.entries(value)) {
+            if (BOOLS.has(key)) {
+                if (typeof val !== 'boolean') throw Error('Invalid setting: ' + key + '.');
+                out[key] = val;
+            } else if (NUMBERS.has(key)) {
+                if (typeof val !== 'number' || !Number.isFinite(val) || val < 0 || val > 1000000) throw Error('Invalid setting: ' + key + '.');
+                if (/^cell(?:Size|Eat|Spawn)?AnimationSpeed$/.test(key) && (val < 30 || val > 300)) throw Error('Animation speeds must be between 30 and 300.');
+                const range = NUMBER_RANGES[key];
+                if (range && (val < range[0] || val > range[1])) throw Error('Invalid range for setting: ' + key + '.');
+                out[key] = val;
+            } else if (COLORS.has(key)) {
+                if (typeof val !== 'string' || !/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(val)) throw Error('Invalid color: ' + key + '.');
+                out[key] = val;
+            } else if (key === 'renderQuality') {
+                if (!['low', 'medium', 'high'].includes(val)) throw Error('Invalid render quality.');
+                out[key] = val;
+            } else if (key === 'cellMassFormat') {
+                if (!['full', 'shortened'].includes(val)) throw Error('Invalid mass format.');
+                out[key] = val;
+            } else if (key === 'themeCursor') {
+                if (typeof val !== 'string' || !/^(?:cursor_(?:0[1-9]|1[0-5])|default|none|auto)?$/.test(val)) throw Error('Invalid cursor.');
+                out[key] = val;
+            } else if (key === 'themeBackgroundImage') out[key] = url(val, 'Background image');
+            // Unknown properties, including nested auth objects, are not retained.
+        }
+        return out;
+    }
+    function sanitize(key, value) {
+        if (key === 'eon_settings') return settings(value);
+        if (key === 'eon_keybinds') {
+            requireObject(value, 'Keybinds');
+            const out = {};
+            for (const name of BINDS) if (own(value, name)) out[name] = string(value[name], 'keybind ' + name, 48);
+            return out;
+        }
+        if (key === 'eon_currentProfile') {
+            if (!/^(?:[1-9]|10)$/.test(String(value)) || !['number', 'string'].includes(typeof value)) throw Error('Profile must be between 1 and 10.');
+            return String(value);
+        }
+        if (key === 'eon_playerInputs') {
+            requireObject(value, 'Player inputs');
+            return own(value, 'lastServer') ? {lastServer: url(value.lastServer, 'Server', true)} : {};
+        }
+        if (key === 'eon_bot_names') {
+            if (!Array.isArray(value) || value.length > 2) throw Error('Two bot names expected.');
+            return value.map(item => string(item, 'bot name', 24));
+        }
+        if (key === 'eon_native_commands') {
+            if (!Array.isArray(value) || value.length > 10) throw Error('Quick chat supports up to 10 messages.');
+            return value.map(item => string(item, 'quick chat message', 255));
+        }
+        if (/^eon_profile_(?:[1-9]|10)$/.test(key)) {
+            requireObject(value, 'Profile');
+            const out = {};
+            const aliases = {primaryNickname: 'nickname1', primarySkin: 'skin1', secondarySkin: 'skin2', lastClanTag: 'tag'};
+            for (const field of PROFILE_FIELDS) {
+                const val = own(value, field) ? value[field] : own(value, aliases[field]) ? value[aliases[field]] : '';
+                out[field] = field.endsWith('Skin') ? url(val, 'Skin') : string(val, field, 256);
+            }
+            return out;
+        }
+        throw Error('Unsupported preference.');
+    }
+    function preferences(value) {
+        requireObject(value, 'Preferences');
+        const out = {};
+        for (const key of KEYS) if (own(value, key)) out[key] = sanitize(key, value[key]);
+        return out;
+    }
+    function metadata(prefs) {
+        return {
+            groups: Object.keys(prefs).length,
+            settings: Object.keys(prefs.eon_settings || {}).length,
+            keybinds: Object.keys(prefs.eon_keybinds || {}).length,
+            profiles: Object.keys(prefs).filter(key => key.startsWith('eon_profile_')).length,
+            commands: (prefs.eon_native_commands || []).length
+        };
+    }
+    function description(meta) {
+        return `${meta.settings} settings · ${meta.keybinds} keybinds · ${meta.profiles} profiles · ${meta.commands} chat messages`;
+    }
+    function cleanVersion(value) { return typeof value === 'string' && /^[\w.+-]{1,40}$/.test(value) ? value : 'unknown'; }
+    function cleanDate(value) { return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null; }
+    function parseImport(text) {
+        if (typeof text !== 'string' || text.length > MAX_FILE) throw Error('Choose a settings JSON file smaller than 128 KB.');
+        let data;
+        try { data = JSON.parse(text); } catch { throw Error('This file is not valid JSON.'); }
+        requireObject(data, 'Settings file');
+        let prefs;
+        if (own(data, 'format')) {
+            if (data.format !== FORMAT || data.schemaVersion !== 1) throw Error('Unsupported settings file format or schema version.');
+            prefs = preferences(data.preferences);
+        } else {
+            // Existing Eon exports remain importable through the same allowlist.
+            const legacy = {};
+            for (const [name, key] of Object.entries({settings: 'eon_settings', keybinds: 'eon_keybinds', playerInputs: 'eon_playerInputs', currentProfile: 'eon_currentProfile', nativeCommands: 'eon_native_commands'})) {
+                if (own(data, name)) legacy[key] = data[name];
+            }
+            if (own(data, 'profiles')) {
+                requireObject(data.profiles, 'Profiles');
+                for (let i = 1; i <= 10; i++) if (own(data.profiles, i)) legacy['eon_profile_' + i] = data.profiles[i];
+            }
+            prefs = preferences(legacy);
+        }
+        const counts = metadata(prefs);
+        if (!counts.groups) throw Error('This file contains no supported Eon preferences.');
+        return {preferences: prefs, appVersion: cleanVersion(data.appVersion), createdAt: cleanDate(data.createdAt), metadata: counts};
+    }
+    function createService(storageProvider, env = root) {
+        let version = VERSION, warning = '', booted = false;
+        const storage = () => typeof storageProvider === 'function' ? storageProvider() : storageProvider;
+        function readState() {
+            const raw = storage().getItem(STATE_KEY);
+            if (!raw) return {schemaVersion: 1, installedVersion: null, backups: []};
+            if (raw.length > MAX_FILE * (MAX_HISTORY + 1)) throw Error('Local backup history is too large.');
+            let state;
+            try { state = JSON.parse(raw); } catch { throw Error('Local backup history is damaged. Export your current settings before updating.'); }
+            if (!object(state) || state.schemaVersion !== 1 || !Array.isArray(state.backups) || state.backups.length > MAX_HISTORY) throw Error('Unsupported local backup history.');
+            return {schemaVersion: 1, installedVersion: state.installedVersion === null ? null : cleanVersion(state.installedVersion), backups: state.backups.map(backup => {
+                requireObject(backup, 'Backup');
+                if (typeof backup.id !== 'string' || !/^[\w.-]{1,100}$/.test(backup.id) || !cleanDate(backup.createdAt)) throw Error('Invalid local backup metadata.');
+                return {id: backup.id, createdAt: cleanDate(backup.createdAt), fromVersion: cleanVersion(backup.fromVersion), toVersion: cleanVersion(backup.toVersion),
+                    reason: ['update', 'import', 'restore'].includes(backup.reason) ? backup.reason : 'update', preferences: preferences(backup.preferences)};
+            })};
+        }
+        function capture() {
+            const prefs = {}, skipped = [];
+            for (const key of KEYS) {
+                const raw = storage().getItem(key);
+                if (raw === null) continue;
+                try {
+                    if (raw.length > MAX_FILE) throw Error('Too large');
+                    prefs[key] = sanitize(key, key === 'eon_currentProfile' ? raw : JSON.parse(raw));
+                } catch { skipped.push(key); }
+            }
+            if (JSON.stringify(prefs).length > MAX_FILE) throw Error('Preferences exceed the local backup size limit.');
+            return {preferences: prefs, skipped};
+        }
+        function saveState(state) { storage().setItem(STATE_KEY, JSON.stringify(state)); }
+        function addBackup(state, prefs, reason, fromVersion, toVersion) {
+            const now = new Date().toISOString();
+            const backup = {id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10), createdAt: now,
+                fromVersion: fromVersion || 'unknown', toVersion, reason, preferences: prefs};
+            state.backups = [backup, ...state.backups].slice(0, MAX_HISTORY);
+            return backup;
+        }
+        function beforeBoot(nextVersion = VERSION) {
+            version = cleanVersion(nextVersion);
+            if (booted) return getStatus();
+            booted = true;
+            try {
+                const state = readState();
+                if (state.installedVersion !== version) {
+                    const snapshot = capture();
+                    if (Object.keys(snapshot.preferences).length) addBackup(state, snapshot.preferences, 'update', state.installedVersion, version);
+                    if (snapshot.skipped.length) warning = 'Some invalid saved preferences could not be backed up: ' + snapshot.skipped.join(', ') + '. Their originals were left in place.';
+                    state.installedVersion = version;
+                    saveState(state);
+                }
+            } catch (error) {
+                warning = 'Automatic backup could not be saved. Browser storage may be unavailable or full. Current preferences were left in place. ' + error.message;
+            }
+            return getStatus();
+        }
+        function getStatus() {
+            let state;
+            try { state = readState(); } catch (error) { return {version, savedVersion: null, backups: [], warning: warning || error.message}; }
+            return {version, savedVersion: state.installedVersion, warning, backups: state.backups.map(({preferences: prefs, ...backup}) => ({...backup, metadata: metadata(prefs)}))};
+        }
+        function exportJSON(app) {
+            const snapshot = capture();
+            if (snapshot.skipped.length) throw Error('Export stopped because saved preferences are invalid: ' + snapshot.skipped.join(', ') + '. Your originals have not changed.');
+            const prefs = snapshot.preferences;
+            if (app?.settings?.getAll) prefs.eon_settings = sanitize('eon_settings', app.settings.getAll());
+            if (app?.input?.getKeybinds) prefs.eon_keybinds = sanitize('eon_keybinds', app.input.getKeybinds());
+            const result = JSON.stringify({format: FORMAT, schemaVersion: 1, appVersion: version, createdAt: new Date().toISOString(), preferences: prefs}, null, 2);
+            if (result.length > MAX_FILE) throw Error('Settings are too large to export (128 KB limit).');
+            return result;
+        }
+        function apply(prefs, reason) {
+            const state = readState(), snapshot = capture();
+            if (snapshot.skipped.length) throw Error('Cannot safely back up invalid current preferences: ' + snapshot.skipped.join(', ') + '. No preferences were changed.');
+            const previous = Object.fromEntries(KEYS.map(key => [key, storage().getItem(key)]));
+            // A durable undo snapshot is required before any preference is overwritten.
+            addBackup(state, snapshot.preferences, reason, version, version);
+            try { saveState(state); } catch { throw Error('Unable to save an undo backup. Browser storage may be full or unavailable. No preferences were changed. Export a file backup and free storage before retrying.'); }
+            const changed = [];
+            try {
+                for (const key of KEYS) {
+                    const next = own(prefs, key) ? key === 'eon_currentProfile' ? prefs[key] : JSON.stringify(prefs[key]) : null;
+                    if (previous[key] === next) continue;
+                    changed.push(key);
+                    if (next === null) storage().removeItem(key); else storage().setItem(key, next);
+                }
+            } catch {
+                let failed = false;
+                for (const key of changed.reverse()) {
+                    try { if (previous[key] === null) storage().removeItem(key); else storage().setItem(key, previous[key]); } catch { failed = true; }
+                }
+                if (failed) throw Error('Storage failed during import and rollback was incomplete. Keep this page open. Your previous preferences are in the latest local backup; export that backup and retry restore when storage is available.');
+                throw Error('Storage failed while applying preferences. Previous preferences were restored; no reload occurred.');
+            }
+            return metadata(prefs);
+        }
+        function applyImport(text) { const data = parseImport(text); return apply(data.preferences, 'import'); }
+        function restoreBackup(id) {
+            const backup = readState().backups.find(item => item.id === id);
+            if (!backup) throw Error('That local backup is no longer available.');
+            return apply(backup.preferences, 'restore');
+        }
+        function backupJSON(id) {
+            const backup = readState().backups.find(item => item.id === id);
+            if (!backup) throw Error('That local backup is no longer available.');
+            return JSON.stringify({format: FORMAT, schemaVersion: 1, appVersion: backup.fromVersion, createdAt: backup.createdAt, preferences: backup.preferences}, null, 2);
+        }
+        function downloadText(text, name) {
+            const objectURL = env.URL.createObjectURL(new env.Blob([text], {type: 'application/json'}));
+            const anchor = env.document.createElement('a');
+            anchor.href = objectURL; anchor.download = name;
+            env.document.body.append(anchor); anchor.click(); anchor.remove();
+            env.setTimeout(() => env.URL.revokeObjectURL(objectURL), 1000);
+        }
+        function download(app) {
+            try { downloadText(exportJSON(app), 'eon-settings-' + new Date().toISOString().slice(0, 10) + '.json'); return true; }
+            catch (error) { env.alert(error.message); return false; }
+        }
+        async function importFile(file) {
+            try {
+                if (!file || file.size > MAX_FILE) throw Error('Choose a settings JSON file smaller than 128 KB.');
+                const text = await file.text(), data = parseImport(text);
+                const details = 'Version: ' + data.appVersion + '\nSaved: ' + (data.createdAt ? new Date(data.createdAt).toLocaleString() : 'Not recorded (legacy export)') + '\n' + description(data.metadata);
+                if (!env.confirm('Import these Eon preferences?\n\n' + details + '\n\nThis replaces your saved preferences and reloads the page. A local undo backup will be saved first. Accounts and replays are excluded.')) return false;
+                applyImport(text); env.location.reload(); return true;
+            } catch (error) { env.alert(error.message); return false; }
+        }
+        function mount(app, container) {
+            const doc = env.document;
+            if (!doc || !container || container.querySelector('.eon-install-panel')) return;
+            const panel = doc.createElement('section'); panel.className = 'eon-install-panel'; panel.setAttribute('aria-label', 'Installation and settings backups');
+            panel.style.cssText = 'margin-top:20px;padding:16px;background:rgba(79,236,255,.045);border:1px solid rgba(79,236,255,.23);border-radius:8px;color:#ddd';
+            const heading = doc.createElement('h3'); heading.textContent = 'Installation & backups'; heading.style.cssText = 'margin:0 0 8px;color:#4fecff;font-size:16px';
+            const status = doc.createElement('p'); status.setAttribute('role', 'status'); status.style.cssText = 'white-space:pre-wrap;line-height:1.5;font-size:12px;margin:0 0 12px';
+            const actions = doc.createElement('div'); actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px';
+            const button = (label, action) => {
+                const el = doc.createElement('button'); el.type = 'button'; el.textContent = label;
+                el.style.cssText = 'padding:8px 10px;border:1px solid #48616b;border-radius:5px;background:#202f36;color:#fff;cursor:pointer;font:inherit;font-size:12px';
+                el.onclick = action; return el;
+            };
+            const file = doc.createElement('input'); file.type = 'file'; file.accept = 'application/json,.json'; file.hidden = true;
+            file.onchange = async () => { if (file.files?.[0]) await importFile(file.files[0]); file.value = ''; refresh(); };
+            actions.append(button('Export settings', () => download(app)), button('Import settings', () => file.click()));
+            const label = doc.createElement('label'); label.textContent = 'Local backup'; label.style.cssText = 'display:block;font-size:12px;margin-bottom:6px';
+            const select = doc.createElement('select'); select.setAttribute('aria-label', 'Choose local settings backup');
+            select.style.cssText = 'width:100%;padding:8px;border:1px solid #48616b;border-radius:5px;background:#17252c;color:#fff;font-size:12px';
+            label.append(select);
+            const preview = doc.createElement('p'); preview.style.cssText = 'font-size:12px;line-height:1.5;white-space:pre-wrap';
+            const restore = button('Restore selected backup', () => {
+                try {
+                    const item = getStatus().backups.find(entry => entry.id === select.value);
+                    if (!item) return;
+                    if (!env.confirm('Restore this local backup?\n\n' + new Date(item.createdAt).toLocaleString() + '\nVersion ' + item.fromVersion + '\n' + description(item.metadata) + '\n\nThis replaces your preferences and reloads. Your current preferences will be backed up first.')) return;
+                    restoreBackup(item.id); env.location.reload();
+                } catch (error) { env.alert(error.message); refresh(); }
+            });
+            const saveBackup = button('Export selected backup', () => {
+                try { downloadText(backupJSON(select.value), 'eon-local-backup.json'); } catch (error) { env.alert(error.message); }
+            });
+            const backupActions = doc.createElement('div'); backupActions.style.cssText = actions.style.cssText; backupActions.append(restore, saveBackup);
+            const help = doc.createElement('p'); help.style.cssText = 'margin:12px 0 0;font-size:12px;line-height:1.6;color:#a9bbc2';
+            help.textContent = 'To update: export settings, import the newer Eon-Senpa-Login.user.js into Tampermonkey, accept the update for the existing script, then reload this same Senpa address. Updates are manual; no release server is configured. Keep only one enabled Eon copy. The last three local backups stay in this browser and site; clearing site data removes them. Export a file before changing browser or address. Account sign-in and replays are not included.';
+            function showPreview() {
+                const entry = getStatus().backups.find(item => item.id === select.value);
+                preview.textContent = entry ? description(entry.metadata) + '\nSaved before ' + entry.reason + ' · ' + entry.fromVersion + ' → ' + entry.toVersion : 'No local backup yet. A backup is saved before version changes and before importing or restoring preferences.';
+                restore.disabled = saveBackup.disabled = !entry;
+            }
+            function refresh() {
+                const data = getStatus(), selected = select.value;
+                status.textContent = 'Installed version ' + data.version + ' · ' + data.backups.length + ' / ' + MAX_HISTORY + ' local backups' + (data.warning ? '\n' + data.warning : '\nSettings are kept on this browser and site. Export a file for an independent copy.');
+                select.replaceChildren();
+                for (const backup of data.backups) {
+                    const option = doc.createElement('option'); option.value = backup.id;
+                    option.textContent = new Date(backup.createdAt).toLocaleString() + ' · ' + backup.fromVersion + ' · before ' + backup.reason;
+                    select.append(option);
+                }
+                if (data.backups.some(item => item.id === selected)) select.value = selected;
+                select.disabled = !data.backups.length; showPreview();
+            }
+            select.onchange = showPreview;
+            panel.append(heading, status, actions, file, label, preview, backupActions, help); container.append(panel); refresh();
+        }
+        return {beforeBoot, getStatus, exportJSON, previewImport: text => { const {preferences: ignored, ...data} = parseImport(text); return data; }, applyImport, restoreBackup, backupJSON, download, importFile, mount};
+    }
+    root.EonSenpaInstall = Object.assign(createService(() => root.localStorage), {VERSION, createService});
+})(window);
+
