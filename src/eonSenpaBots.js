@@ -104,6 +104,7 @@
                 name:typeof names?.[index] === 'string' ? names[index].slice(0, 24) : 'Bot ' + (index + 1),
                 client:null, primary:null, status:'Disconnected', roamTargets:[],
                 intent:null, nextSpawn:[0, 0], nextSplit:0, nextFeed:0, generation:0, packets:0, spawned:0}));
+            this.botLogs = [];
             this.createUI();
             this.accounts.forEach((account, accountIndex) => {
                 let lastToken = null;
@@ -192,7 +193,28 @@
                 until:now + 2500 + Math.random() * 1500
             };
         }
-        setStatus(bot, text) { bot.status = text; this.render(bot); }
+        botLog(bot, type, message, meta = {}) {
+            const clean = v => String(v ?? '').replace(/(?:eyJ[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+/g, '[redacted JWT]').replace(/(?:access_token|authorization|password|sessionId|accessKey)\s*[:=]\s*[^\s&,;]+/gi, '$1=[redacted]').slice(0, 350);
+            const event = {time:new Date().toISOString(), account:bot.accountIndex+1, bot:bot.index+1, type, message:clean(message)};
+            if (Number.isInteger(meta.code)) event.code = meta.code;
+            if (meta.reason) event.reason = clean(meta.reason);
+            this.botLogs.push(event);
+            if (this.botLogs.length > 400) this.botLogs.shift();
+            this.paintBotLogs();
+        }
+        paintBotLogs() {
+            const out = this.panel?.querySelector('[data-bot-logs]');
+            if (!out || out.hidden) return;
+            out.textContent = this.botLogs.slice(-100).map(e => `[${e.time.slice(11,19)}] Account ${e.account} Bot ${e.bot} · ${e.type}: ${e.message}${e.code !== undefined ? ' (code '+e.code+')' : ''}${e.reason ? ' · '+e.reason : ''}`).join('\n') || 'No bot events yet';
+            out.scrollTop = out.scrollHeight;
+        }
+        setStatus(bot, text) {
+            if (bot.status !== text) {
+                const important = /connect|socket|ready|spawn|verification|reject|limit|fail|time.?out|stopp|disconnect|error|login|sign in|unconfirm/i.test(text);
+                if (important) this.botLog(bot, /fail|rejected|error|timeout|limit|unconfirm/i.test(text) ? 'ERROR' : 'STATE', text);
+            }
+            bot.status = text; this.render(bot);
+        }
         setTargetStatus(text) {
             const label = this.panel?.querySelector('[data-target-status]');
             if (label && label.textContent !== text) label.textContent = text;
@@ -325,11 +347,12 @@
                 bot.nextSpawn[slot] = performance.now() + 1500;
                 this.lifeStatus(bot);
             });
-            client.events.on('error', error => { if (current()) this.disconnect(index, 'Connection failed: ' + (error?.message || 'network error')); });
+            client.events.on('error', error => { if (current()) { this.botLog(bot, 'ERROR', error?.message || 'network error'); this.disconnect(index, 'Connection failed: ' + (error?.message || 'network error')); } });
             client.events.on('disconnected', () => {
                 if (!current()) return;
                 clearTimeout(bot.timeout); bot.client = null; bot.intent = null;
                 setTimeout(() => client.disposeProtocol?.(), 0);
+                this.botLog(bot, 'DISCONNECT', 'Bot connection closed', {code:client.lastCloseCode, reason:client.lastCloseReason});
                 this.setStatus(bot, 'Disconnected');
                 setTimeout(() => {
                     if (bot.generation === attempt && !bot.client && client.lastCloseCode) this.setStatus(bot,
@@ -338,7 +361,7 @@
             });
             this.setStatus(bot, 'Connecting…');
             bot.timeout = setTimeout(() => { if (current()) this.disconnect(index, 'Server handshake timed out'); }, 25000);
-            await client.connect(target);
+            try { await client.connect(target); } catch (error) { if (current()) this.disconnect(index, 'Connect failed: ' + (error?.message || String(error))); }
         }
         async connectAll() {
             if (this.connectingAll) return;
@@ -361,6 +384,7 @@
             const bot = this.bots[index], client = bot.client;
             bot.generation++; clearTimeout(bot.timeout);
             bot.client = null; bot.intent = null; bot.primary = null;
+            if (client) this.botLog(bot, 'DISCONNECT', status, {code:client.lastCloseCode});
             client?.close();
             client?.disposeProtocol?.();
             this.setStatus(bot, status);
@@ -480,6 +504,16 @@
             panel.querySelector('[data-connect]').onclick = () => this.connectAll();
             panel.querySelector('[data-spawn]').onclick = () => this.bots.forEach(b => this.spawn(b.index));
             panel.querySelector('[data-stop]').onclick = () => this.disconnectAll();
+            const logSection = document.createElement('section');
+            logSection.innerHTML = '<div class="bot-actions"><strong>BOT DIAGNOSTICS</strong><button type="button" data-bot-toggle>Show logs</button><button type="button" data-bot-export>Export</button><button type="button" data-bot-clear>Clear</button></div><pre data-bot-logs hidden style="white-space:pre-wrap;overflow:auto;max-height:240px;background:#07101d;color:#a5defa;border:1px solid #304155;padding:10px;font:11px/1.6 monospace"></pre>';
+            panel.insertBefore(logSection, panel.querySelector('[data-cards]'));
+            const logs = logSection.querySelector('[data-bot-logs]');
+            logSection.querySelector('[data-bot-toggle]').onclick = e => { logs.hidden = !logs.hidden; e.currentTarget.textContent = logs.hidden ? 'Show logs' : 'Hide logs'; this.paintBotLogs(); };
+            logSection.querySelector('[data-bot-clear]').onclick = () => {this.botLogs.length=0; this.paintBotLogs();};
+            logSection.querySelector('[data-bot-export]').onclick = () => {
+                const blob = new Blob([JSON.stringify({generatedAt:new Date().toISOString(), scope:'bot-only', events:this.botLogs},null,2)], {type:'application/json'});
+                const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href=url; link.download='eon-bot-diagnostics.json'; link.click(); setTimeout(()=>URL.revokeObjectURL(url), 1000);
+            };
             const accountSection = document.createElement('section');
             accountSection.innerHTML = '<strong>Account Manager (10 separate logins)</strong><small>Login each account through Senpa official Facebook / Discord authentication. Account sessions use separate local keys. Facebook cookies remain shared in one browser. Server limits still apply.</small>';
             for (let i = 0; i < this.accounts.length; i++) {
