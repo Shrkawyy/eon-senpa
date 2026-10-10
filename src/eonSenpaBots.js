@@ -243,8 +243,13 @@
             const bot = this.bots[index], main = this.app.gameConnection.current;
             if (bot.client) return;
             if (!ready(main) || this.app.replayManager?.isReplay) { this.setStatus(bot, 'Connect your main player first'); return; }
+            const account = this.accounts[bot.accountIndex];
+            if (!account?.getToken()) {
+                this.setStatus(bot, 'Sign in to Account ' + (bot.accountIndex + 1) + ' first');
+                return;
+            }
             const target = endpoint(main);
-            if (!target) return;
+            if (!target) { this.setStatus(bot, 'Main server address unavailable'); return; }
             const attempt = ++bot.generation;
             bot.primary = main; bot.packets = 0; bot.spawned = 0; bot.distance = null; bot.serverNotice = '';
             bot.nextSpawn = [0, 0]; bot.roamTargets = [];
@@ -328,7 +333,7 @@
                 this.setStatus(bot, 'Disconnected');
                 setTimeout(() => {
                     if (bot.generation === attempt && !bot.client && client.lastCloseCode) this.setStatus(bot,
-                        client.lastCloseCode === 4405 ? 'Server connection limit reached' : 'Disconnected · code ' + client.lastCloseCode);
+                        client.lastCloseCode === 4405 ? 'Server connection limit reached (4405)' : client.lastCloseCode === 4406 ? 'Server rejected session (4406) · check account login and server policy' : 'Disconnected · code ' + client.lastCloseCode);
                 }, 0);
             });
             this.setStatus(bot, 'Connecting…');
@@ -442,7 +447,7 @@
                 const c = bot.client;
                 if (!c) continue;
                 if (bot.primary !== main || !ready(main) || replay || endpoint(c) && endpoint(c) !== endpoint(main)) {
-                    this.disconnect(bot.index, 'Stopped · main connection changed'); continue;
+                    this.disconnect(bot.index, !ready(main) ? 'Stopped · main game disconnected' : 'Stopped · main game session or server changed'); continue;
                 }
                 this.updateSpawn(bot, spawnPoint, now);
                 if (!ready(c) || c.verificationPending) continue;
@@ -470,18 +475,18 @@
             document.head.append(style);
             const panel = this.panel = document.createElement('aside'); panel.id = 'eon-bots-panel'; panel.hidden = true;
             panel.setAttribute('aria-label', 'Bot controls');
-            panel.innerHTML = '<header><strong>10 accounts · two connections each</strong><button data-close aria-label="Close bot controls">×</button></header><div class="bot-actions"><button data-connect>Connect all</button><button data-spawn>Spawn all players</button><button data-stop>Disconnect all</button></div><div data-cards></div><small>Show/hide shortcut: Settings → Controls → Bot Controls. Spawn near uses the reference script’s spectator positioning; the server chooses the final location. Fast split: 100 ms · Light feed: one eject / 300 ms. Bots keep working while your main player is dead, spectating, or in the lobby. Actions pause while typing or editing settings. Player mode waits when the server no longer supplies the selected player’s position.</small>';
+            panel.innerHTML = '<header><strong>10 account slots · 2 connections × up to 2 players</strong><button data-close aria-label="Close bot controls">×</button></header><div class="bot-actions"><button data-connect>Connect all</button><button data-spawn>Spawn all players</button><button data-stop>Disconnect all</button></div><div data-cards></div><small>Show/hide shortcut: Settings → Controls → Bot Controls. Spawn near uses the reference script’s spectator positioning; the server chooses the final location. Fast split: 100 ms · Light feed: one eject / 300 ms. Bots keep working while your main player is dead, spectating, or in the lobby. Actions pause while typing or editing settings. Player mode waits when the server no longer supplies the selected player’s position.</small>';
             panel.querySelector('[data-close]').onclick = () => this.toggle();
             panel.querySelector('[data-connect]').onclick = () => this.connectAll();
             panel.querySelector('[data-spawn]').onclick = () => this.bots.forEach(b => this.spawn(b.index));
             panel.querySelector('[data-stop]').onclick = () => this.disconnectAll();
             const accountSection = document.createElement('section');
-            accountSection.innerHTML = '<strong>Account Manager (10 separate logins)</strong><small>Login each account through Senpa official Facebook / Discord authentication. Accounts and tokens stay in this browser. Senpa server limits still apply.</small>';
+            accountSection.innerHTML = '<strong>Account Manager (10 separate logins)</strong><small>Login each account through Senpa official Facebook / Discord authentication. Account sessions use separate local keys. Facebook cookies remain shared in one browser. Server limits still apply.</small>';
             for (let i = 0; i < this.accounts.length; i++) {
                 const row = document.createElement('div');
                 row.dataset.accountRow = String(i);
                 row.style.cssText = 'padding:10px 0;border-bottom:1px solid #304155';
-                row.innerHTML = '<strong>Account ' + (i + 1) + '</strong> · <span data-account-status>Guest</span>' +
+                row.innerHTML = '<strong>Account ' + (i + 1) + '</strong> · <span data-account-status>Guest</span> · up to 4 players (2 connections)' +
                     '<div class="bot-actions" style="margin-top:8px"><button data-account-login="facebook">Facebook login</button>' +
                     '<button data-account-login="discord">Discord login</button><button data-account-logout hidden>Logout</button>' +
                     '<button data-account-connect>Connect 2</button><button data-account-stop>Disconnect 2</button></div>' +
@@ -495,6 +500,7 @@
                     this.disconnectAccount(i); this.accounts[i].logout();
                 };
                 row.querySelector('[data-account-connect]').onclick = async () => {
+                    if (!this.accounts[i].getToken()) { const bots = this.bots.filter(b => b.accountIndex === i); bots.forEach(bot => this.setStatus(bot, 'Sign in to this account first')); return; }
                     for (const bot of this.bots.filter(b => b.accountIndex === i)) await this.connect(bot.index);
                 };
                 row.querySelector('[data-account-stop]').onclick = () => this.disconnectAccount(i);
@@ -524,7 +530,7 @@
             };
             for (const bot of this.bots) {
                 const card = bot.card = document.createElement('section'); card.dataset.bot = bot.index;
-                card.innerHTML = '<strong>Account ' + (bot.accountIndex + 1) + ' · Bot ' + (bot.index + 1) + '</strong><input type="text" maxlength="24" aria-label="Bot name"><output class="bot-status" aria-live="polite"></output><div class="bot-actions"><button data-connect>Connect</button><button data-disconnect>Disconnect</button><button data-spawn>Spawn players</button></div><div class="bot-options"></div>';
+                card.innerHTML = '<strong>Account ' + (bot.accountIndex + 1) + ' · Connection ' + (bot.index % 2 + 1) + ' (up to 2 players)</strong><input type="text" maxlength="24" aria-label="Bot name"><output class="bot-status" aria-live="polite"></output><div class="bot-actions"><button data-connect>Connect</button><button data-disconnect>Disconnect</button><button data-spawn>Spawn players</button></div><div class="bot-options"></div>';
                 const notice = document.createElement('small'); notice.dataset.serverMessage = ''; notice.hidden = true;
                 notice.setAttribute('role', 'status'); notice.style.cssText = 'color:#ffca80;overflow-wrap:anywhere;margin:0 0 10px';
                 card.querySelector('output').after(notice);

@@ -36,3 +36,10 @@ Upload everything in this folder to a GitHub repository. Use the **Raw** URL of 
 - A shared browser Facebook cookie may cause the same Facebook account to be selected repeatedly. Change Facebook identity in the popup if needed.
 - This only adds client-side account management. It does **not** bypass Senpa server-side limits or guarantee 20 active connections. Test locally before deploying.
 - The main account remains separate. Token storage is browser localStorage and should be treated as sensitive. Do not post it publicly.
+
+## Session diagnostics update 1.8.1
+- Clarifies that a **connection** may have up to two native player slots. Two connections give at most four player slots **if the server allocates them**, not four additional connections.
+- Bot Connect now requires an explicit bot-account session rather than silently connecting as a guest.
+- Code 4406 is displayed as a server session rejection: this update does not override the server or guarantee that simultaneous Facebook sessions are supported.
+- A second Facebook sign-in in the same browser may invalidate a previous session. If this occurs, test with the game's ordinary official login and contact Senpa support; do not attempt to bypass server limits.
+- Files still contain legacy `inline-2.js` code that mocks `eonauth.battlecell.io` calls. Audit ownership/authorization and remove it before public distribution if it is not yours to modify.
