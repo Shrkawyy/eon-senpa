@@ -29,3 +29,10 @@ Upload everything in this folder to a GitHub repository. Use the **Raw** URL of 
 - It keeps original option DOM nodes because the client binds click listeners directly to them.
 - If the tracker is unavailable, it falls back to the previously saved endpoint, with a console warning.
 - **Not live-verified**: the tracker response, live socket handshake and spawn must be tested in a browser before release. No server is created or started by the script.
+
+## Experimental 10-account manager
+- Ten separate account slots; each slot is assigned two helper connections.
+- Login uses official Senpa OAuth popups; no passwords are requested by the userscript.
+- A shared browser Facebook cookie may cause the same Facebook account to be selected repeatedly. Change Facebook identity in the popup if needed.
+- This only adds client-side account management. It does **not** bypass Senpa server-side limits or guarantee 20 active connections. Test locally before deploying.
+- The main account remains separate. Token storage is browser localStorage and should be treated as sensitive. Do not post it publicly.

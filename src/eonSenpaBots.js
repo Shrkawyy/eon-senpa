@@ -92,31 +92,41 @@
             this.app = app;
             this.controls = {follow:true, split:false, feed:false, respawn:false};
             this.followMode = 'mouse'; this.targetId = null; this.targetRecord = null; this.targetConnection = null;
-            this.account = root.createSenpaAccount(root, {prefix:'eon_bots', isolated:true, popupName:'SenpaBotAccountLogin'});
+            // Each account has isolated local token storage and its own two helper connections.
+            this.accounts = Array.from({length:10}, (_, index) => root.createSenpaAccount(root, {
+                prefix:'eon_bots_' + (index + 1), isolated:true,
+                popupName:'SenpaBotAccountLogin_' + (index + 1)
+            }));
             let names = [];
             try { names = JSON.parse(localStorage.getItem('eon_bot_names') || '[]'); } catch {}
-            this.bots = [0, 1].map(index => ({index, name:typeof names?.[index] === 'string' ? names[index].slice(0, 24) : 'Bot ' + (index + 1),
+            this.bots = Array.from({length:20}, (_, index) => ({index,
+                accountIndex:Math.floor(index / 2),
+                name:typeof names?.[index] === 'string' ? names[index].slice(0, 24) : 'Bot ' + (index + 1),
                 client:null, primary:null, status:'Disconnected', roamTargets:[],
                 intent:null, nextSpawn:[0, 0], nextSplit:0, nextFeed:0, generation:0, packets:0, spawned:0}));
             this.createUI();
-            let lastToken = null;
-            this.account.subscribe(state => {
-                const current = this.account.getToken(), profile = state.account;
-                this.panel.querySelector('[data-account-status]').textContent = state.status === 'signing-in' ? 'Complete sign-in in the popup…' :
-                    state.signedIn ? 'Bot account: ' + (profile?.name || profile?.username || profile?.id || 'Signed in') : 'Bot account: Guest';
-                this.panel.querySelector('[data-account-error]').textContent = state.error;
-                this.panel.querySelector('[data-account-logout]').hidden = !state.signedIn;
-                if (current !== lastToken) {
-                    if (lastToken && !current) this.disconnectAll();
-                    lastToken = current;
-                    for (const bot of this.bots) if (ready(bot.client)) {
-                        bot.client.sendAuth(); if (!bot.client.hasAlivePlayers) bot.client.sendPlayerInfo();
+            this.accounts.forEach((account, accountIndex) => {
+                let lastToken = null;
+                account.subscribe(state => {
+                    const current = account.getToken(), profile = state.account;
+                    const row = this.panel.querySelector('[data-account-row="' + accountIndex + '"]');
+                    if (!row) return;
+                    row.querySelector('[data-account-status]').textContent = state.status === 'signing-in' ? 'Complete sign-in in popup…' :
+                        state.signedIn ? (profile?.name || profile?.username || profile?.id || 'Signed in') : 'Guest';
+                    row.querySelector('[data-account-error]').textContent = state.error || '';
+                    row.querySelector('[data-account-logout]').hidden = !state.signedIn;
+                    if (current !== lastToken) {
+                        if (lastToken && !current) this.disconnectAccount(accountIndex);
+                        lastToken = current;
+                        for (const bot of this.bots.filter(b => b.accountIndex === accountIndex)) if (ready(bot.client)) {
+                            bot.client.sendAuth(); if (!bot.client.hasAlivePlayers) bot.client.sendPlayerInfo();
+                        }
                     }
-                }
+                });
+                account.initialize().catch(() => {});
             });
-            this.account.initialize().catch(() => {});
             this.timer = setInterval(() => this.tick(), 40);
-            root.addEventListener('pagehide', () => { this.disconnectAll(); this.account.dispose(); });
+            root.addEventListener('pagehide', () => { this.disconnectAll(); this.accounts.forEach(account => account.dispose()); });
             root.addEventListener('keydown', event => {
                 if (app.input.isRebinding || app.settingsMenu?.isVisible || event.ctrlKey || event.altKey || event.metaKey || this.typing(event.target)) return;
                 const action = app.input.getAction(event.code || event.key);
@@ -245,7 +255,7 @@
                 toasts:{show:text => this.setStatus(bot, text)}};
             const client = bot.client = new main.constructor(facade);
             client.isAuxiliary = true;
-            client.botAccount = this.account;
+            client.botAccount = this.accounts[bot.accountIndex];
             root.EonSenpaIntegration.patchClient(client);
             isolatedProtocol(client);
             client.updateCells = ownedWorld;
@@ -350,6 +360,7 @@
             client?.disposeProtocol?.();
             this.setStatus(bot, status);
         }
+        disconnectAccount(accountIndex) { this.bots.filter(b => b.accountIndex === accountIndex).forEach(b => this.disconnect(b.index)); }
         disconnectAll() { this.batch = (this.batch || 0) + 1; this.bots.forEach(bot => this.disconnect(bot.index)); }
         lifeStatus(bot) {
             const players = slots(bot.client), alive = players.filter(tab => tab.player.cells.length).length;
@@ -459,22 +470,39 @@
             document.head.append(style);
             const panel = this.panel = document.createElement('aside'); panel.id = 'eon-bots-panel'; panel.hidden = true;
             panel.setAttribute('aria-label', 'Bot controls');
-            panel.innerHTML = '<header><strong>Two connections · two players each</strong><button data-close aria-label="Close bot controls">×</button></header><div class="bot-actions"><button data-connect>Connect both</button><button data-spawn>Spawn all players</button><button data-stop>Disconnect all</button></div><div data-cards></div><small>Show/hide shortcut: Settings → Controls → Bot Controls. Spawn near uses the reference script’s spectator positioning; the server chooses the final location. Fast split: 100 ms · Light feed: one eject / 300 ms. Bots keep working while your main player is dead, spectating, or in the lobby. Actions pause while typing or editing settings. Player mode waits when the server no longer supplies the selected player’s position.</small>';
+            panel.innerHTML = '<header><strong>10 accounts · two connections each</strong><button data-close aria-label="Close bot controls">×</button></header><div class="bot-actions"><button data-connect>Connect all</button><button data-spawn>Spawn all players</button><button data-stop>Disconnect all</button></div><div data-cards></div><small>Show/hide shortcut: Settings → Controls → Bot Controls. Spawn near uses the reference script’s spectator positioning; the server chooses the final location. Fast split: 100 ms · Light feed: one eject / 300 ms. Bots keep working while your main player is dead, spectating, or in the lobby. Actions pause while typing or editing settings. Player mode waits when the server no longer supplies the selected player’s position.</small>';
             panel.querySelector('[data-close]').onclick = () => this.toggle();
             panel.querySelector('[data-connect]').onclick = () => this.connectAll();
             panel.querySelector('[data-spawn]').onclick = () => this.bots.forEach(b => this.spawn(b.index));
             panel.querySelector('[data-stop]').onclick = () => this.disconnectAll();
-            const account = document.createElement('section');
-            account.innerHTML = '<strong data-account-status>Bot account: Guest</strong><div class="bot-actions" style="margin-top:10px"><button data-account-login="discord">Discord login</button><button data-account-login="facebook">Facebook login</button><button data-account-logout hidden>Logout</button></div><small data-account-error role="status"></small><small>Both connections use this separate account. Choose your other account in the login popup. Without a bot login, they connect as guests. If renewal is unavailable, sign in again when the session expires.</small>';
-            panel.querySelector('[data-cards]').before(account);
-            account.querySelectorAll('[data-account-login]').forEach(button => button.onclick = () => {
-                this.disconnectAll();
-                root.SenpaAccount.isolateSession();
-                this.account.login(button.dataset.accountLogin);
-            });
-            account.querySelector('[data-account-logout]').onclick = () => { this.disconnectAll(); this.account.logout(); };
+            const accountSection = document.createElement('section');
+            accountSection.innerHTML = '<strong>Account Manager (10 separate logins)</strong><small>Login each account through Senpa official Facebook / Discord authentication. Accounts and tokens stay in this browser. Senpa server limits still apply.</small>';
+            for (let i = 0; i < this.accounts.length; i++) {
+                const row = document.createElement('div');
+                row.dataset.accountRow = String(i);
+                row.style.cssText = 'padding:10px 0;border-bottom:1px solid #304155';
+                row.innerHTML = '<strong>Account ' + (i + 1) + '</strong> · <span data-account-status>Guest</span>' +
+                    '<div class="bot-actions" style="margin-top:8px"><button data-account-login="facebook">Facebook login</button>' +
+                    '<button data-account-login="discord">Discord login</button><button data-account-logout hidden>Logout</button>' +
+                    '<button data-account-connect>Connect 2</button><button data-account-stop>Disconnect 2</button></div>' +
+                    '<small data-account-error role="status"></small>';
+                row.querySelectorAll('[data-account-login]').forEach(button => button.onclick = () => {
+                    this.disconnectAccount(i);
+                    root.SenpaAccount.isolateSession();
+                    this.accounts[i].login(button.dataset.accountLogin);
+                });
+                row.querySelector('[data-account-logout]').onclick = () => {
+                    this.disconnectAccount(i); this.accounts[i].logout();
+                };
+                row.querySelector('[data-account-connect]').onclick = async () => {
+                    for (const bot of this.bots.filter(b => b.accountIndex === i)) await this.connect(bot.index);
+                };
+                row.querySelector('[data-account-stop]').onclick = () => this.disconnectAccount(i);
+                accountSection.append(row);
+            }
+            panel.querySelector('[data-cards]').before(accountSection);
             const follow = document.createElement('section');
-            follow.innerHTML = '<label>Follow <select data-follow-mode aria-label="Follow mode"><option value="mouse">Mouse</option><option value="random">Random movement</option><option value="player">Selected player</option></select></label><div data-player-picker hidden><div class="bot-actions" style="margin-top:10px"><select data-target-player aria-label="Player to follow" style="min-width:0;flex:1"><option value="">Choose a player…</option></select><button data-refresh-players>Refresh</button></div><small data-target-status>Choose a player from the list.</small></div><strong style="display:block;margin:12px 0">Both bots</strong><div class="bot-options" data-shared-controls></div><small>Rebind shortcuts: Settings → Controls → Bots. Each player slot chooses its own destination in random mode.</small>';
+            follow.innerHTML = '<label>Follow <select data-follow-mode aria-label="Follow mode"><option value="mouse">Mouse</option><option value="random">Random movement</option><option value="player">Selected player</option></select></label><div data-player-picker hidden><div class="bot-actions" style="margin-top:10px"><select data-target-player aria-label="Player to follow" style="min-width:0;flex:1"><option value="">Choose a player…</option></select><button data-refresh-players>Refresh</button></div><small data-target-status>Choose a player from the list.</small></div><strong style="display:block;margin:12px 0">All bots</strong><div class="bot-options" data-shared-controls></div><small>Rebind shortcuts: Settings → Controls → Bots. Each player slot chooses its own destination in random mode.</small>';
             panel.querySelector('[data-cards]').before(follow);
             follow.querySelectorAll('select').forEach(select => { select.style.cssText += ';background:#172235;color:#edf5ff;border:1px solid #42627d;padding:7px;border-radius:6px;max-width:100%'; });
             follow.querySelector('[data-follow-mode]').onchange = event => {
@@ -496,7 +524,7 @@
             };
             for (const bot of this.bots) {
                 const card = bot.card = document.createElement('section'); card.dataset.bot = bot.index;
-                card.innerHTML = '<input type="text" maxlength="24" aria-label="Bot name"><output class="bot-status" aria-live="polite"></output><div class="bot-actions"><button data-connect>Connect</button><button data-disconnect>Disconnect</button><button data-spawn>Spawn players</button></div><div class="bot-options"></div>';
+                card.innerHTML = '<strong>Account ' + (bot.accountIndex + 1) + ' · Bot ' + (bot.index + 1) + '</strong><input type="text" maxlength="24" aria-label="Bot name"><output class="bot-status" aria-live="polite"></output><div class="bot-actions"><button data-connect>Connect</button><button data-disconnect>Disconnect</button><button data-spawn>Spawn players</button></div><div class="bot-options"></div>';
                 const notice = document.createElement('small'); notice.dataset.serverMessage = ''; notice.hidden = true;
                 notice.setAttribute('role', 'status'); notice.style.cssText = 'color:#ffca80;overflow-wrap:anywhere;margin:0 0 10px';
                 card.querySelector('output').after(notice);
