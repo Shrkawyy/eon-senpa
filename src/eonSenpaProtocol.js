@@ -393,11 +393,13 @@
         client.sendEmoji = function (slot) { return root.EonSenpaEmotes?.sendEmoji(this, slot); };
         client.sendChat = function (type, text) { return root.EonSenpaEmotes?.sendChat(this, type, text, this.app.nativeChatRoom); };
         client.sendSpawn = function () {
-            if (!ready(this) || !this.isDead) return;
+            if (!ready(this) || !this.isDead || !this.tabs?.[this.tabIndex]) return false;
             this.feedState = false;
             this.sendMacroFeed?.(this.tabIndex, false);
             this.sendPlayerInfo();
             send(this, [0, this.tabIndex]);
+            if (!this.isAuxiliary) this.eonSpawnSent?.(this.tabIndex);
+            return true;
         };
         client.sendSpectate = function () {
             if (!ready(this) || (this.hasAlivePlayers ?? !this.isDead)) return false;

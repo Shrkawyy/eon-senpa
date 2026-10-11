@@ -2,96 +2,96 @@
   {
     "order": 1,
     "name": "eonSenpaInstall.js",
-    "bytes": 25562
+    "bytes": 25563
   },
   {
     "order": 2,
     "name": "inline-1.js",
-    "bytes": 44
+    "bytes": 45
   },
   {
     "order": 3,
     "name": "inline-2.js",
-    "bytes": 1101
+    "bytes": 62
   },
   {
     "order": 4,
     "name": "wasmLoader.js",
-    "bytes": 47735
+    "bytes": 47736
   },
   {
     "order": 5,
     "name": "senpaio.js",
-    "bytes": 18113
+    "bytes": 20461
   },
   {
     "order": 6,
     "name": "eonNativeMulti.js",
-    "bytes": 10647
+    "bytes": 15387
   },
   {
     "order": 7,
     "name": "eonSenpaEmotes.js",
-    "bytes": 11032
+    "bytes": 11033
   },
   {
     "order": 8,
     "name": "eonSenpaEmotesUI.js",
-    "bytes": 12834
+    "bytes": 12835
   },
   {
     "order": 9,
     "name": "eonSenpaMinimap.js",
-    "bytes": 6995
+    "bytes": 6996
   },
   {
     "order": 10,
     "name": "eonSenpaMotion.js",
-    "bytes": 3012
+    "bytes": 3013
   },
   {
     "order": 11,
     "name": "eonSenpaControls.js",
-    "bytes": 11026
+    "bytes": 11027
   },
   {
     "order": 12,
     "name": "eonSenpaProtocol.js",
-    "bytes": 22088
+    "bytes": 25995
   },
   {
     "order": 13,
     "name": "eonSenpaioIntegration.js",
-    "bytes": 13323
+    "bytes": 13324
   },
   {
     "order": 14,
     "name": "eonSenpaBots.js",
-    "bytes": 38526
+    "bytes": 47722
   },
   {
     "order": 15,
     "name": "replay.js",
-    "bytes": 55982
+    "bytes": 55983
   },
   {
     "order": 16,
     "name": "eonSenpaSkins.js",
-    "bytes": 24233
+    "bytes": 24234
   },
   {
     "order": 17,
     "name": "eonSenpaNames.js",
-    "bytes": 11413
+    "bytes": 11414
   },
   {
     "order": 18,
     "name": "test.js",
-    "bytes": 720884
+    "bytes": 697771
   },
   {
     "order": 19,
     "name": "inline-18.js",
-    "bytes": 276
+    "bytes": 277
   }
 ]
