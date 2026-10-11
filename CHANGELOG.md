@@ -12,3 +12,6 @@
 ## 2.1.3
 - Added optional world-anchored right-click draggable bot target marker and follow behavior after server-selected spawn.
 - Stabilized FFA overlapping world-cell selection across Tab changes.
+
+## v2.1.4 — blue active ring, non-destructive skin tint, bot target hit testing
+See VISUAL-AND-BOX-2.1.4.md

@@ -25,12 +25,14 @@
     function rawRoute(url) { return String(url || '').startsWith(BASE) ? url.slice(BASE.length) : url || ''; }
     const localCache = [{}, {}];
     function localSkin(app, cell) {
-        const client = app.gameConnection.current, slot = cell.clientOrigin?.index;
-        if (app.replayManager?.isReplay || client?.isReplay || ![0, 1].includes(slot) ||
-            client?.tabs[slot] !== cell.clientOrigin) return '';
-        const value = app.player[slot === 0 ? 'skin1' : 'skin2'];
+        const slot = cell.clientOrigin?.index;
+        const owner = app.gameConnection?.clients?.find(c => c.tabs?.[slot] === cell.clientOrigin);
+        if (app.replayManager?.isReplay || !owner || owner.isReplay || ![0, 1].includes(slot)) return '';
+        const second = !!owner.isEonSecondary;
+        const skinSlot = second ? 1 : slot;
+        const value = app.player[skinSlot === 0 ? 'skin1' : 'skin2'];
         if (typeof value !== 'string' || !/^https?:\/\//i.test(value.trim())) return '';
-        const cached = localCache[slot];
+        const cached = localCache[skinSlot];
         if (cached.value !== value) { cached.value = value; cached.url = skinURL(value.trim()); }
         return cached.url;
     }

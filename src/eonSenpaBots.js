@@ -155,8 +155,8 @@
             const input = this.panel?.querySelector('[data-option=' + key + ']');
             if (input) input.checked = this.controls[key];
         }
-        // A visible, draggable targeting reticle. We do not intercept network
-        // packets or attempt to force server spawn coordinates.
+        // A world-anchored right-click target. The canvas can sit below transparent
+        // game HUD layers, so hit-test through overlays while excluding UI controls.
         initializeTargetBox() {
             const box = this.boxElement = document.createElement('div');
             box.id = 'eon-bot-world-target'; box.hidden = true;
@@ -164,46 +164,66 @@
             box.textContent = 'BOT TARGET';
             box.style.cssText = 'position:fixed;left:0;top:0;transform:translate(-50%,-50%);width:42px;height:42px;z-index:790;pointer-events:none;display:none;align-items:center;justify-content:center;border:2px solid #4ef0de;background:#08cfb522;box-shadow:0 0 0 2px #061b27,0 0 16px #24e6d67a;border-radius:7px;color:white;font:700 8px system-ui;white-space:nowrap;text-shadow:0 1px 3px #000';
             document.body.append(box);
-            const gameCanvas = e => e.target === this.app.stage?.canvas;
-            const maySelect = e => this.boxEnabled && gameCanvas(e) && !document.hidden &&
+            const stage = this.app.stage;
+            const canvasRect = () => stage?.canvas?.getBoundingClientRect?.() ||
+                {left:0,top:0,width:root.innerWidth,height:root.innerHeight,right:root.innerWidth,bottom:root.innerHeight};
+            const blocked = target => !!target?.closest?.(
+                'button,input,textarea,select,a,[contenteditable="true"],[role="dialog"],'+
+                '#eon-bots-panel,#eon-dual-ffa-toggle,.lobby-overlay,.settings-overlay,'+
+                '#settingsOverlay,#chatContainer,#leaderboard,#stats-hud,#minimap');
+            const inGameArea = e => {
+                const canvas = stage?.canvas, rect=canvasRect();
+                if (!canvas || !Number.isFinite(e.clientX) || !Number.isFinite(e.clientY) ||
+                    e.clientX < rect.left || e.clientX > rect.right ||
+                    e.clientY < rect.top || e.clientY > rect.bottom || blocked(e.target)) return false;
+                if (e.target === canvas || canvas.contains?.(e.target)) return true;
+                // Game overlays may receive the click even though canvas is below.
+                const stack = document.elementsFromPoint?.(e.clientX, e.clientY) || [];
+                return stack.includes(canvas);
+            };
+            const maySelect = e => this.boxEnabled && inGameArea(e) && !document.hidden &&
                 !this.app.settingsMenu?.isVisible && !this.app.lobby?.isVisible &&
                 !this.app.replayManager?.isReplay && ready(this.app.gameConnection?.primary || this.app.gameConnection?.current);
-            const choose = e => {
-                const stage = this.app.stage, camera = stage.camera;
-                if (!camera || !Number.isFinite(camera.zoom) || camera.zoom <= 0) return;
-                const point = {x:camera.x + (e.clientX - root.innerWidth / 2) / camera.zoom,
-                               y:camera.y + (e.clientY - root.innerHeight / 2) / camera.zoom};
-                if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
-                const border = stage.border;
+            this.placeTargetAtScreen = (clientX,clientY) => {
+                const camera=stage?.camera, rect=canvasRect();
+                if (!camera || !Number.isFinite(camera.zoom) || camera.zoom <= 0 ||
+                    !Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+                const point={x:camera.x + (clientX - (rect.left+rect.width/2))/camera.zoom,
+                    y:camera.y + (clientY - (rect.top+rect.height/2))/camera.zoom};
+                if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
+                const border=stage.border;
                 if (border && Number.isFinite(border.left) && Number.isFinite(border.right) && border.right > border.left &&
                     Number.isFinite(border.top) && Number.isFinite(border.bottom) && border.bottom > border.top) {
-                    point.x = Math.min(border.right, Math.max(border.left, point.x));
-                    point.y = Math.min(border.bottom, Math.max(border.top, point.y));
+                    point.x=Math.min(border.right,Math.max(border.left,point.x));
+                    point.y=Math.min(border.bottom,Math.max(border.top,point.y));
                 }
-                this.boxPoint = point;
-                this.boxServer = endpoint(this.app.gameConnection.primary || this.app.gameConnection.current);
+                this.boxPoint=point;
+                this.boxServer=endpoint(this.app.gameConnection.primary || this.app.gameConnection.current);
                 if (this.followMode !== 'box') this.setFollowMode('box');
                 this.paintTargetBox();
+                return true;
             };
             root.addEventListener('mousedown', e => {
                 if (e.button !== 2 || !maySelect(e)) return;
-                this.boxDragging = true; choose(e);
+                this.boxDragging=true;
+                this.placeTargetAtScreen(e.clientX,e.clientY);
                 e.preventDefault(); e.stopImmediatePropagation();
-            }, true);
+            },true);
             root.addEventListener('mousemove', e => {
+                if (inGameArea(e)) this.lastGameCursor={x:e.clientX,y:e.clientY};
                 if (!this.boxDragging) return;
-                if (!(e.buttons & 2)) { this.boxDragging = false; return; }
-                choose(e);
-            }, true);
+                if (!(e.buttons & 2)) {this.boxDragging=false;return;}
+                if (inGameArea(e)) this.placeTargetAtScreen(e.clientX,e.clientY);
+            },true);
             root.addEventListener('mouseup', e => {
-                if (e.button === 2) this.boxDragging = false;
-            }, true);
-            root.addEventListener('blur', () => {this.boxDragging = false;});
-            root.addEventListener('contextmenu', e => {
-                if (maySelect(e) || (this.boxDragging && gameCanvas(e))) {
+                if (e.button === 2) this.boxDragging=false;
+            },true);
+            root.addEventListener('blur',()=>{this.boxDragging=false;});
+            root.addEventListener('contextmenu',e=>{
+                if (maySelect(e) || (this.boxDragging && inGameArea(e))) {
                     e.preventDefault(); e.stopImmediatePropagation();
                 }
-            }, true);
+            },true);
         }
         paintTargetBox() {
             const box = this.boxElement, point = this.boxPoint, stage = this.app.stage;
@@ -212,9 +232,10 @@
                 this.boxServer && this.boxServer === endpoint(source) &&
                 Number.isFinite(stage.camera.zoom) && stage.camera.zoom > 0;
             if (!valid) {if (box) {box.hidden = true; box.style.display='none';} return;}
-            const x = root.innerWidth/2 + (point.x - stage.camera.x) * stage.camera.zoom;
-            const y = root.innerHeight/2 + (point.y - stage.camera.y) * stage.camera.zoom;
-            if (x < -50 || y < -50 || x > root.innerWidth+50 || y > root.innerHeight+50) {
+            const rect=stage.canvas?.getBoundingClientRect?.() || {left:0,top:0,width:root.innerWidth,height:root.innerHeight};
+            const x = rect.left+rect.width/2 + (point.x - stage.camera.x) * stage.camera.zoom;
+            const y = rect.top+rect.height/2 + (point.y - stage.camera.y) * stage.camera.zoom;
+            if (x < rect.left-50 || y < rect.top-50 || x > rect.left+rect.width+50 || y > rect.top+rect.height+50) {
                 box.hidden = true; box.style.display='none'; return;
             }
             box.hidden = false;
@@ -665,8 +686,8 @@
             }
             panel.querySelector('[data-cards]').before(accountSection);
             const follow = document.createElement('section');
-            follow.innerHTML = '<label>Follow <select data-follow-mode aria-label="Follow mode"><option value="mouse">Mouse</option><option value="random">Random movement</option><option value="player">Selected player</option><option value="box">Target box (right-click)</option></select></label><div class="bot-actions" style="margin-top:10px;flex-wrap:wrap"><label><input type="checkbox" data-target-box-enabled> Right-click target box</label><button type="button" data-target-box-clear>Clear box</button></div><small>Enable box, then hold right-click and drag over the game to place the destination. Bots follow it after server-selected spawn. The box cannot force spawn coordinates.</small><div data-player-picker hidden><div class="bot-actions" style="margin-top:10px"><select data-target-player aria-label="Player to follow" style="min-width:0;flex:1"><option value="">Choose a player…</option></select><button data-refresh-players>Refresh</button></div><small data-target-status>Choose a player from the list.</small></div><strong style="display:block;margin:12px 0">All bots</strong><div class="bot-options" data-shared-controls></div><small>Rebind shortcuts: Settings → Controls → Bots. Each player slot chooses its own destination in random mode.</small>';
-            panel.querySelector('[data-cards]').before(follow);
+            follow.innerHTML = '<label>Follow <select data-follow-mode aria-label="Follow mode"><option value="mouse">Mouse</option><option value="random">Random movement</option><option value="player">Selected player</option><option value="box">Target box (right-click)</option></select></label><div class="bot-actions" style="margin-top:10px;flex-wrap:wrap"><label><input type="checkbox" data-target-box-enabled> Right-click target box</label><button type="button" data-target-box-place>Place at cursor</button><button type="button" data-target-box-clear>Clear box</button></div><small>Enable box, then right-click and drag over the game. If your browser captures right-click, move the mouse over the game and choose Place at cursor. Bots follow it after server-selected spawn. The box cannot force spawn coordinates.</small><div data-player-picker hidden><div class="bot-actions" style="margin-top:10px"><select data-target-player aria-label="Player to follow" style="min-width:0;flex:1"><option value="">Choose a player…</option></select><button data-refresh-players>Refresh</button></div><small data-target-status>Choose a player from the list.</small></div><strong style="display:block;margin:12px 0">All bots</strong><div class="bot-options" data-shared-controls></div><small>Rebind shortcuts: Settings → Controls → Bots. Each player slot chooses its own destination in random mode.</small>';
+            accountSection.before(follow);
             follow.querySelectorAll('select').forEach(select => { select.style.cssText += ';background:#172235;color:#edf5ff;border:1px solid #42627d;padding:7px;border-radius:6px;max-width:100%'; });
             follow.querySelector('[data-follow-mode]').onchange = event => {
                 this.setFollowMode(event.target.value);
@@ -678,6 +699,12 @@
                 else if (this.followMode === 'box') this.setFollowMode('mouse');
                 this.paintTargetBox();
                 e.target.blur();
+            };
+            follow.querySelector('[data-target-box-place]').onclick = () => {
+                const mouse=this.lastGameCursor;
+                if (this.boxEnabled && mouse && this.placeTargetAtScreen?.(mouse.x,mouse.y)) {
+                    this.app.toasts?.show('Bot target placed. Bots will navigate there after spawn.', 'info', 2000);
+                } else this.app.toasts?.show('Enable the target box, move the mouse over the game, then click Place at cursor.', 'info', 2500);
             };
             follow.querySelector('[data-target-box-clear]').onclick = () => this.clearTargetBox();
             for (const [key, text] of [['follow','Follow / move'],['respawn','Auto respawn'],['split','Fast split'],['feed','Light feed']]) {

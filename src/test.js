@@ -6977,18 +6977,16 @@
                             this.drawVirusShape(t);
                         else {
                             const multiSession = this.app.gameConnection;
-                            const dualActive = !!(window.EonDualFFA?.enabled() && multiSession.secondary?.clientReady);
-                            const ownerIsSecondary = dualActive && multiSession.secondary.tabs.includes(t.clientOrigin);
+                            const dualVisual = window.EonDualFFA?.visualState?.(t, multiSession, this.settings) || null;
+                            const dualActive = !!dualVisual;
                             var a = dualActive || (multiSession.current?.tabs.length || 0) >= 2
                               , s = !!t.clientOrigin && a
                               , c = s && this.settings.themeUseMultiboxCellColor
                               , l = t.colorHex;
                             if (c) {
                                 if (dualActive) {
-                                    // Fixed identity: P1 = chosen MULTI CELL COLOR (red),
-                                    // P2 = chosen INACTIVE color (white), independent of Tab.
-                                    l = ownerIsSecondary ? this.settings.themeMultiboxCellColorInactive : this.settings.themeMultiboxCellColor;
-                                    r = null; // opaque skins must not cover chosen Multi colors
+                                    l = dualVisual.fill; // active = white; inactive = red
+                                    // Do NOT disable skins. Add a subtle tint over images below.
                                 } else {
                                     var u = multiSession.current;
                                     l = t.clientOrigin.index === u.tabIndex ? this.settings.themeMultiboxCellColor : this.settings.themeMultiboxCellColorInactive;
@@ -7006,12 +7004,22 @@
                             h && this.ctx.drawImage(h.image, t.x - emoteAppearance.radius, t.y - emoteAppearance.radius, 2 * emoteAppearance.radius, 2 * emoteAppearance.radius),
                             window.EonSenpaEmotes.draw(this, t, emoteAppearance),
                             this.ctx.globalAlpha = e,
-                            s && !this.settings.themeUseMultiboxCellColor && t.clientOrigin) {
+                            c && dualActive && h && !f) {
+                                // Opaque skins still show fully, with a gentle red/white
+                                // identity tint so the setting never hides the skin.
+                                this.ctx.globalAlpha = e * Math.min(1, (this.settings.cellsTransparency ?? 100)/100) * .23;
+                                this.ctx.fillStyle = l;
+                                this.ctx.fill();
+                                this.ctx.globalAlpha = e;
+                            }
+                            if (s && (!this.settings.themeUseMultiboxCellColor || dualActive) && t.clientOrigin) {
                                 var p = this.app.gameConnection.current
-                                  , y = dualActive ? !ownerIsSecondary : t.clientOrigin.index === p.tabIndex
+                                  , y = dualActive ? dualVisual.active : t.clientOrigin.index === p.tabIndex
                                   , v = this.settings.themeMultiboxRingWidth;
+                                // Blue selection outline follows Tab even in Cell Color mode.
                                 this.ctx.lineWidth = t.r / 100 * v,
-                                this.ctx.strokeStyle = y ? this.settings.themeMultiboxRingColor : this.settings.themeMultiboxRingColorInactive;
+                                this.ctx.strokeStyle = dualActive ? dualVisual.ring :
+                                    y ? this.settings.themeMultiboxRingColor : this.settings.themeMultiboxRingColorInactive;
                                 var g = t.r - (this.ctx.lineWidth >> 1);
                                 this.ctx.beginPath(),
                                 this.ctx.arc(t.x, t.y, g, 0, this.pi2),

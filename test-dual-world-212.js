@@ -2,9 +2,9 @@ const fs = require('node:fs'), assert = require('node:assert/strict'), vm = requ
 const src=fs.readFileSync(__dirname+'/src/test.js','utf8');
 assert(src.includes('const byId = new Map()'));
 assert(src.includes('if (surviving)'));
-assert(src.includes('const dualActive = !!(window.EonDualFFA?.enabled() && multiSession.secondary?.clientReady)'));
-assert(src.includes('const ownerIsSecondary = dualActive && multiSession.secondary.tabs.includes(t.clientOrigin)'));
-assert(src.includes('l = ownerIsSecondary ? this.settings.themeMultiboxCellColorInactive : this.settings.themeMultiboxCellColor'));
+assert(src.includes('const dualActive = !!dualVisual')); 
+assert(src.includes('const dualVisual = window.EonDualFFA?.visualState?.(t, multiSession, this.settings)')); 
+assert(src.includes('l = dualVisual.fill')); 
 // Verify the actual death callback compiled out of the bundled game code.
 const deathMatch=src.match(/client\.events\.on\("died", \(\) => \{([\s\S]*?)\n\s*\}\);/);
 assert(deathMatch,'death event found');

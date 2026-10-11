@@ -18,6 +18,21 @@
     return /free\s*for\s*all|\bffa\b|nemesis/i.test(option?.textContent || selected);
   }
   function ready(c) {return !!(c?.clientReady&&c.isConnected&&c.authCompleted&&c.tabs?.length);}
+  // Resolve the cell's owner from the live connection, not a tab index that
+  // happens to be 0 on BOTH separate FFA sockets.
+  function visualState(cell, session, settings={}) {
+    const origin=cell?.clientOrigin, primary=session?.primary, secondary=session?.secondary;
+    if (!active || !origin || !ready(secondary) || !primary?.tabs?.length) return null;
+    const isPrimary=primary.tabs.includes(origin), isSecondary=secondary.tabs.includes(origin);
+    if (!isPrimary && !isSecondary) return null;
+    const selected=session.current === (isSecondary?secondary:primary);
+    // In Dual FFA the ACTIVE player is white and the other is red.
+    // Keep the existing picker values usable: the 'inactive' cell picker
+    // holds white; the normal cell picker holds red in the supplied profile.
+    return {active:selected, owner:isSecondary?'secondary':'primary',
+      fill:selected?(settings.themeMultiboxCellColorInactive||'#FFFFFF'):(settings.themeMultiboxCellColor||'#E60000'),
+      ring:selected?(settings.themeMultiboxRingColor||'#00B9E8'):(settings.themeMultiboxRingColorInactive||'#FFFFFF')};
+  }
   function refresh(){
     if(!panel) return;
     const secondary=app?.gameConnection?.secondary;
@@ -104,7 +119,7 @@
     refresh();
     log('INIT','Optional dual-socket FFA ready; server permission still required');
   }
-  const api={initialize,enabled:()=>active,switchTab,onDisconnected,setEnabled,
+  const api={initialize,enabled:()=>active,switchTab,onDisconnected,setEnabled,visualState,
     status:()=>({enabled:active,selectedServer:app?.player?.serverUrl||'',modeFFA:isFFA(),
       mainVerified:!!root.SenpaAccount?.snapshot?.().verified,
       alivePlayers:app?.gameConnection?.totalPlaying||0,
