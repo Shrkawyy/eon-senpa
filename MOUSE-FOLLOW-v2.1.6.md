@@ -1,3 +1,5 @@
+> Historical documentation. Current right-hold behavior: RIGHT-HOLD-v2.1.7.md.
+
 # EON Senpa v2.1.6 — Mouse target without a box
 
 - The old **BOT TARGET** marker, right-click event interception, dragging, and target-box controls have been removed. Right-click continues to work for the game.

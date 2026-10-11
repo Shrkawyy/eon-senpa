@@ -1,3 +1,5 @@
+> Historical documentation. Current right-hold behavior: RIGHT-HOLD-v2.1.7.md.
+
 > Historical notes from older versions. Target box feature was removed in v2.1.6. See MOUSE-FOLLOW-v2.1.6.md.
 
 # EON Senpa v2.1.5 — target box and ring-mode correction

@@ -21,3 +21,9 @@ See VISUAL-AND-BOX-2.1.4.md
 - Mouse is the default invisible target for bot following and spectator positioning before spawn.
 - Added safe cursor cache for pressing Spawn from the bot panel.
 - Kept the server's spawn authority and other EON features unchanged.
+
+## 2.1.7
+- Blank target marker appears only while right mouse button is held; releases immediately hide it.
+- Hold-to-follow movement target replaces continuous mouse following.
+- Release action defaults to disconnecting bots, with a keep-connected stop-movement option.
+- Original auth, spawn, dual FFA, skins, HUD, and replay logic kept.

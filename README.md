@@ -41,3 +41,6 @@ See BOT-BOX-AND-RINGS-v2.1.5.md for the new ring toggle and target-box fixes.
 
 ## v2.1.6 — Invisible mouse target
 There is no Bot Target square. In **Bot Controls**, use **Follow: Mouse (automatic, no box)** and leave **Follow / move** ON. Move the mouse inside the playing field. Spawn requests include the last valid cursor position as a spectator-positioning hint, then bots steer toward your cursor once the server reports living cells. The server controls the initial spawn location.
+
+## v2.1.7 — Right-click hold bot target
+See RIGHT-HOLD-v2.1.7.md. Blank box shows only while holding right-click; release action is selectable (disconnect default).
