@@ -92,10 +92,10 @@
             this.app = app;
             this.controls = {follow:true, split:false, feed:false, respawn:false};
             this.followMode = 'mouse'; this.targetId = null; this.targetRecord = null; this.targetConnection = null;
-            // Target box is optional. Server picks the actual spawn location;
-            // box holds a WORLD coordinate bots can move toward after spawning.
-            this.boxEnabled = false; this.boxPoint = null; this.boxServer = null;
-            this.boxDragging = false; this.boxElement = null;
+            // Follow the latest mouse position inside the playing field.
+            // This is client-side navigation; the server controls initial spawn.
+            this.cursorPoint = null;
+            this.cursorServer = null;
             // Each account has isolated local token storage and its own two helper connections.
             this.accounts = Array.from({length:10}, (_, index) => root.createSenpaAccount(root, {
                 prefix:'eon_bots_' + (index + 1), isolated:true,
@@ -111,7 +111,7 @@
                 intent:null, nextSpawn:[0, 0], nextSplit:0, nextFeed:0, generation:0, packets:0, spawned:0}));
             this.botLogs = [];
             this.createUI();
-            this.initializeTargetBox();
+            this.initializeMouseTracking();
             this.accounts.forEach((account, accountIndex) => {
                 let lastToken = null;
                 account.subscribe(state => {
@@ -134,7 +134,7 @@
                 account.initialize().catch(() => {});
             });
             this.timer = setInterval(() => this.tick(), 40);
-            root.addEventListener('pagehide', () => { this.disconnectAll(); this.accounts.forEach(account => account.dispose()); this.boxElement?.remove(); });
+            root.addEventListener('pagehide', () => { this.disconnectAll(); this.accounts.forEach(account => account.dispose()); });
             root.addEventListener('keydown', event => {
                 if (app.input.isRebinding || app.settingsMenu?.isVisible || event.ctrlKey || event.altKey || event.metaKey || this.typing(event.target)) return;
                 const action = app.input.getAction(event.code || event.key);
@@ -155,138 +155,50 @@
             const input = this.panel?.querySelector('[data-option=' + key + ']');
             if (input) input.checked = this.controls[key];
         }
-        // Right-click target coordinates are in WORLD units; render the marker
-        // above decorative game overlays but never intercept normal clicks.
-        // This path does not alter the server-selected spawn coordinates.
-        boxStatus(message, isError = false) {
-            const label = this.panel?.querySelector('[data-target-box-status]');
-            if (label) {
-                label.textContent = message;
-                if (label.style) label.style.color = isError ? '#ffc28c' : '#79e8d7';
-            }
-            const entry = {time:new Date().toISOString(), account:'Main', type:isError ? 'ERROR' : 'TARGET',
-                message:String(message).slice(0,200)};
-            if (!this.botLogs) this.botLogs = [];
-            this.botLogs.push(entry);
-            if (this.botLogs.length > 500) this.botLogs.shift();
-            this.paintBotLogs();
-            if (isError) console.warn('[EON Bot Target]', message);
-            else console.info('[EON Bot Target]', message);
+        // No box, ring, click override, or on-screen target marker is created.
+        // Capture a cursor inside the playing field and keep its world position
+        // while the user clicks the bot controls or moves outside the game.
+        initializeMouseTracking() {
+            root.addEventListener('pointermove', event => {
+                const stage = this.app.stage;
+                const canvas = stage?.canvas, camera = stage?.camera;
+                if (!canvas || !camera || !Number.isFinite(camera.zoom) || camera.zoom <= 0 ||
+                    this.app.replayManager?.isReplay || this.app.settingsMenu?.isVisible ||
+                    this.app.lobby?.isVisible || document.hidden) return;
+                if (event.target?.closest?.('#eon-bots-panel,button,input,textarea,select,[role="dialog"],.lobby-overlay,.settings-overlay')) return;
+                const rect = canvas.getBoundingClientRect?.();
+                if (!rect || rect.width <= 0 || rect.height <= 0 ||
+                    event.clientX < rect.left || event.clientX > rect.right ||
+                    event.clientY < rect.top || event.clientY > rect.bottom) return;
+                // Use the same camera transform as Senpa's stage renderer.
+                let x = camera.x + (event.clientX - (rect.left + rect.width / 2)) / camera.zoom;
+                let y = camera.y + (event.clientY - (rect.top + rect.height / 2)) / camera.zoom;
+                if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+                const border = stage.border;
+                if (border && [border.left,border.top,border.right,border.bottom].every(Number.isFinite) &&
+                    border.right > border.left && border.bottom > border.top) {
+                    x = Math.min(border.right, Math.max(border.left, x));
+                    y = Math.min(border.bottom, Math.max(border.top, y));
+                }
+                this.cursorPoint = {x,y};
+                this.cursorServer = endpoint(this.app.gameConnection.primary || this.app.gameConnection.current);
+            }, {capture:true,passive:true});
         }
-        initializeTargetBox() {
-            const box = this.boxElement = document.createElement('div');
-            box.id = 'eon-bot-world-target'; box.hidden = true;
-            box.setAttribute('aria-label','Bot follow destination');
-            box.textContent = 'BOT TARGET';
-            box.style.cssText = 'position:fixed;left:0;top:0;transform:translate(-50%,-50%);width:46px;height:46px;z-index:1001;pointer-events:none;display:none;align-items:center;justify-content:center;border:3px solid #4ef0de;background:#08cfb54a;box-shadow:0 0 0 2px #061b27,0 0 18px #24e6d6af;border-radius:7px;color:white;font:700 9px system-ui;white-space:nowrap;text-shadow:0 1px 3px #000';
-            document.body.append(box);
+        mouseTarget() {
+            const primary = this.app.gameConnection.primary || this.app.gameConnection.current;
+            if (this.cursorPoint && this.cursorServer === endpoint(primary)) return this.cursorPoint;
+            // A freshly opened game may not have received a pointermove yet.
+            // Fall back to the game's native mouse coordinates when available.
             const stage = this.app.stage;
-            const canvasRect = () => stage?.canvas?.getBoundingClientRect?.() ||
-                {left:0,top:0,width:root.innerWidth,height:root.innerHeight,right:root.innerWidth,bottom:root.innerHeight};
-            const blocked = target => !!target?.closest?.(
-                'button,input,textarea,select,a,[contenteditable="true"],[role="dialog"],'+
-                '#eon-bots-panel,#eon-dual-ffa-toggle,.lobby-overlay,.settings-overlay,'+
-                '#settingsOverlay,#chatContainer,#leaderboard,#stats-hud,#minimap');
-            // Hit testing by rect, NOT elementsFromPoint(). Game renderer and
-            // HUD often contain fullscreen layers whose stacking masks canvas.
-            const inGameArea = e => {
-                const rect=canvasRect();
-                return !!stage?.canvas && Number.isFinite(e.clientX) && Number.isFinite(e.clientY) &&
-                    e.clientX >= rect.left && e.clientX <= rect.right &&
-                    e.clientY >= rect.top && e.clientY <= rect.bottom && !blocked(e.target);
-            };
-            const maySelect = e => this.boxEnabled && inGameArea(e) && !document.hidden &&
-                !this.app.settingsMenu?.isVisible && !this.app.lobby?.isVisible &&
-                !this.app.replayManager?.isReplay;
-            this.placeTargetAtScreen = (clientX,clientY) => {
-                const camera=stage?.camera, rect=canvasRect();
-                if (!this.boxEnabled || !camera || !Number.isFinite(camera.zoom) || camera.zoom <= 0 ||
-                    !Number.isFinite(clientX) || !Number.isFinite(clientY) ||
-                    clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom)
-                    return false;
-                const point={x:camera.x + (clientX - (rect.left+rect.width/2))/camera.zoom,
-                    y:camera.y + (clientY - (rect.top+rect.height/2))/camera.zoom};
-                if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
-                const border=stage.border;
-                if (border && Number.isFinite(border.left) && Number.isFinite(border.right) && border.right > border.left &&
-                    Number.isFinite(border.top) && Number.isFinite(border.bottom) && border.bottom > border.top) {
-                    point.x=Math.min(border.right,Math.max(border.left,point.x));
-                    point.y=Math.min(border.bottom,Math.max(border.top,point.y));
-                }
-                this.boxPoint=point;
-                this.boxServer=endpoint(this.app.gameConnection.primary || this.app.gameConnection.current);
-                if (this.followMode !== 'box') this.setFollowMode('box');
-                this.paintTargetBox();
-                return true;
-            };
-            const down = e => {
-                if (e.button !== 2 || !this.boxEnabled || !inGameArea(e)) return;
-                if (!maySelect(e)) {
-                    this.boxStatus('Cannot place: close the lobby/settings, leave replay, and focus the game.',true);
-                    return;
-                }
-                if (this.placeTargetAtScreen(e.clientX,e.clientY)) {
-                    this.boxDragging=true;
-                    this.boxStatus('Target placed. Drag with right mouse to move; bots follow after spawning.');
-                    e.preventDefault(); e.stopImmediatePropagation();
-                } else this.boxStatus('Target failed: camera coordinates unavailable.',true);
-            };
-            const move = e => {
-                if (inGameArea(e)) this.lastGameCursor={x:e.clientX,y:e.clientY};
-                if (!this.boxDragging) return;
-                if (!(e.buttons & 2)) {this.boxDragging=false;return;}
-                if (inGameArea(e)) this.placeTargetAtScreen(e.clientX,e.clientY);
-            };
-            const up = e => { if (e.button === 2) this.boxDragging=false; };
-            // pointerdown is not swallowed by Senpa mouse handlers, while the
-            // mousedown fallback keeps compatibility with older browsers.
-            root.addEventListener('pointerdown', down,true);
-            root.addEventListener('mousedown', down,true);
-            root.addEventListener('pointermove',move,true);
-            root.addEventListener('mousemove',move,true);
-            root.addEventListener('pointerup',up,true);
-            root.addEventListener('mouseup',up,true);
-            root.addEventListener('blur',()=>{this.boxDragging=false;});
-            root.addEventListener('contextmenu',e=>{
-                if (!this.boxEnabled || !inGameArea(e)) return;
-                if (!this.boxDragging && maySelect(e) && this.placeTargetAtScreen(e.clientX,e.clientY))
-                    this.boxStatus('Target placed via right-click menu event.');
-                if (maySelect(e)) {e.preventDefault(); e.stopImmediatePropagation();}
-            },true);
-        }
-        paintTargetBox() {
-            const box = this.boxElement, point = this.boxPoint, stage = this.app.stage;
-            const source = this.app.gameConnection?.primary || this.app.gameConnection?.current;
-            const valid = this.boxEnabled && this.followMode === 'box' && point && stage?.camera &&
-                (!this.boxServer || this.boxServer === endpoint(source)) &&
-                Number.isFinite(stage.camera.zoom) && stage.camera.zoom > 0;
-            if (!valid) {if (box) {box.hidden = true; box.style.display='none';} return;}
-            const rect=stage.canvas?.getBoundingClientRect?.() || {left:0,top:0,width:root.innerWidth,height:root.innerHeight};
-            const x = rect.left+rect.width/2 + (point.x - stage.camera.x) * stage.camera.zoom;
-            const y = rect.top+rect.height/2 + (point.y - stage.camera.y) * stage.camera.zoom;
-            if (x < rect.left-50 || y < rect.top-50 || x > rect.left+rect.width+50 || y > rect.top+rect.height+50) {
-                box.hidden = true; box.style.display='none'; return;
-            }
-            box.hidden = false;
-            box.style.left=x+'px';box.style.top=y+'px';box.style.display='flex';
-        }
-        clearTargetBox() {
-            this.boxPoint = null; this.boxServer = null; this.boxDragging = false;
-            if (this.followMode === 'box') this.setFollowMode('mouse');
-            this.paintTargetBox();
-            this.boxStatus('Target cleared.');
+            stage?.updateMouseWorldPosition?.();
+            const x=stage?.mouse?.worldX, y=stage?.mouse?.worldY;
+            return Number.isFinite(x) && Number.isFinite(y) ? {x,y} : null;
         }
         setFollowMode(mode) {
-            if (!['mouse', 'player', 'random', 'box'].includes(mode)) return;
+            if (!['mouse', 'player', 'random'].includes(mode)) return;
             this.followMode = mode;
             for (const bot of this.bots) bot.roamTargets = [];
             this.panel.querySelector('[data-follow-mode]').value = mode;
-            if (mode === 'box') {
-                this.boxEnabled = true;
-                const checkbox = this.panel.querySelector('[data-target-box-enabled]');
-                if (checkbox) checkbox.checked = true;
-            }
-            this.paintTargetBox();
             this.panel.querySelector('[data-player-picker]').hidden = mode !== 'player';
             if (mode === 'player') { this.refreshTargets(); this.playerTarget(); }
         }
@@ -495,11 +407,11 @@
                 bot.roamTargets[slot] = null;
                 this.removeSpawnSlot(bot, slot, performance.now());
                 bot.spawned++;
-                const anchor = this.followMode === 'box' && this.boxPoint ? this.boxPoint : this.anchor();
+                const anchor = this.followMode === 'mouse' ? this.mouseTarget() : this.anchor();
                 const player = client.tabs[slot].player;
                 bot.distance = anchor ? Math.round(Math.hypot(player.x - anchor.x, player.y - anchor.y)) : null;
-                if (this.followMode === 'box' && this.boxPoint) this.botLog(bot, 'SPAWN_LOCATION',
-                    'Server-selected spawn · distance from target box ' + (bot.distance ?? 'unknown') + ' world units');
+                if (this.followMode === 'mouse' && anchor) this.botLog(bot, 'SPAWN_LOCATION',
+                    'Server-selected spawn · distance from mouse ' + (bot.distance ?? 'unknown') + ' world units; follow starts after spawn');
                 this.lifeStatus(bot);
             });
             client.events.on('helperSlotDied', slot => {
@@ -576,7 +488,7 @@
             client.app.player.tag = this.app.player.tag;
             client.sendSpectate();
             bot.intent = {slots:missing.map(tab => tab.index), started:performance.now(), sentAt:null, attempts:0, pausedAt:null, automatic};
-            this.setStatus(bot, this.boxEnabled && this.boxPoint && this.followMode === 'box' ? 'Spawn requested · moving toward target box after spawn' : this.anchor() ? 'Attempting spawn near main player…' : 'Requesting spawn…');
+            this.setStatus(bot, this.followMode === 'mouse' ? 'Spawn requested near cursor · server chooses location; bot follows mouse when alive' : this.anchor() ? 'Attempting spawn near main player…' : 'Requesting spawn…');
         }
         removeSpawnSlot(bot, slot, now) {
             const intent = bot.intent;
@@ -623,7 +535,6 @@
             });
         }
         tick() {
-            this.paintTargetBox();
             if (!this.bots.some(bot => bot.client)) return;
             const main = (this.app.gameConnection.primary || this.app.gameConnection.current), now = performance.now();
             const replay = this.app.replayManager?.isReplay;
@@ -632,15 +543,11 @@
             const active = !document.hidden && !replay && !this.app.settingsMenu?.isVisible && !this.typing();
             const anchor = this.anchor();
             let target = null;
-            if (this.followMode === 'box' && this.boxEnabled && this.boxPoint &&
-                this.boxServer === endpoint(main)) target = this.boxPoint;
-            else if (this.followMode === 'player') target = this.playerTarget(now);
-            else if (active && this.followMode === 'mouse') {
-                this.app.stage.updateMouseWorldPosition();
-                const mouse = this.app.stage.mouse;
-                if (Number.isFinite(mouse.worldX) && Number.isFinite(mouse.worldY)) target = {x:mouse.worldX, y:mouse.worldY};
-            }
-            const spawnPoint = this.followMode === 'box' ? target : anchor || (this.followMode === 'player' ? target : null);
+            if (this.followMode === 'player') target = this.playerTarget(now);
+            else if (this.followMode === 'mouse') target = this.mouseTarget();
+            // Request spectator positioning near the cursor before Spawn.
+            // This is a hint, NOT a promise that the server will spawn there.
+            const spawnPoint = this.followMode === 'mouse' ? target || anchor : anchor || (this.followMode === 'player' ? target : null);
             for (const bot of this.bots) {
                 const c = bot.client;
                 if (!c) continue;
@@ -673,7 +580,7 @@
             document.head.append(style);
             const panel = this.panel = document.createElement('aside'); panel.id = 'eon-bots-panel'; panel.hidden = true;
             panel.setAttribute('aria-label', 'Bot controls');
-            panel.innerHTML = '<header><strong>10 account slots · 2 connections × up to 2 players</strong><button data-close aria-label="Close bot controls">×</button></header><div class="bot-actions"><button data-connect>Connect all</button><button data-spawn>Spawn all players</button><button data-stop>Disconnect all</button></div><div data-cards></div><small>Show/hide shortcut: Settings → Controls → Bot Controls. Spawn near uses spectator positioning; only the server decides the initial location. Target box follows a world-coordinate destination after spawn. Fast split: 100 ms · Light feed: one eject / 300 ms. Bots keep working while your main player is dead, spectating, or in the lobby. Actions pause while typing or editing settings. Player mode waits when the server no longer supplies the selected player’s position.</small>';
+            panel.innerHTML = '<header><strong>10 account slots · 2 connections × up to 2 players</strong><button data-close aria-label="Close bot controls">×</button></header><div class="bot-actions"><button data-connect>Connect all</button><button data-spawn>Spawn all players</button><button data-stop>Disconnect all</button></div><div data-cards></div><small>Show/hide shortcut: Settings → Controls → Bot Controls. Spawn near uses spectator positioning; only the server decides the initial location. Bots follow your mouse after spawn; no target marker. Fast split: 100 ms · Light feed: one eject / 300 ms. Bots keep working while your main player is dead, spectating, or in the lobby. Actions pause while typing or editing settings. Player mode waits when the server no longer supplies the selected player’s position.</small>';
             panel.querySelector('[data-close]').onclick = () => this.toggle();
             panel.querySelector('[data-connect]').onclick = () => this.connectAll();
             panel.querySelector('[data-spawn]').onclick = () => this.bots.forEach(b => this.spawn(b.index));
@@ -717,32 +624,13 @@
             }
             panel.querySelector('[data-cards]').before(accountSection);
             const follow = document.createElement('section');
-            follow.innerHTML = '<label>Follow <select data-follow-mode aria-label="Follow mode"><option value="mouse">Mouse</option><option value="random">Random movement</option><option value="player">Selected player</option><option value="box">Target box (right-click)</option></select></label><div class="bot-actions" style="margin-top:10px;flex-wrap:wrap"><label><input type="checkbox" data-target-box-enabled> Right-click target box</label><button type="button" data-target-box-place>Place at cursor</button><button type="button" data-target-box-clear>Clear box</button></div><small data-target-box-status role="status" style="color:#79e8d7">Target box OFF. Enable it before placing.</small><small>Enable box, then right-click and drag over the game. If your browser captures right-click, move the mouse over the game and choose Place at cursor. Bots follow it after server-selected spawn. The box cannot force spawn coordinates.</small><div data-player-picker hidden><div class="bot-actions" style="margin-top:10px"><select data-target-player aria-label="Player to follow" style="min-width:0;flex:1"><option value="">Choose a player…</option></select><button data-refresh-players>Refresh</button></div><small data-target-status>Choose a player from the list.</small></div><strong style="display:block;margin:12px 0">All bots</strong><div class="bot-options" data-shared-controls></div><small>Rebind shortcuts: Settings → Controls → Bots. Each player slot chooses its own destination in random mode.</small>';
+            follow.innerHTML = '<label>Follow <select data-follow-mode aria-label="Follow mode"><option value="mouse">Mouse (automatic, no box)</option><option value="random">Random movement</option><option value="player">Selected player</option></select></label><small>Move your mouse over the game before pressing Spawn. EON requests spawning near that position, then steers bots toward your cursor after the server spawns them. The actual spawn coordinates are server-controlled. No right-click or target box is needed.</small><div data-player-picker hidden><div class="bot-actions" style="margin-top:10px"><select data-target-player aria-label="Player to follow" style="min-width:0;flex:1"><option value="">Choose a player…</option></select><button data-refresh-players>Refresh</button></div><small data-target-status>Choose a player from the list.</small></div><strong style="display:block;margin:12px 0">All bots</strong><div class="bot-options" data-shared-controls></div><small>Rebind shortcuts: Settings → Controls → Bots. Each player slot chooses its own destination in random mode.</small>';
             accountSection.before(follow);
             follow.querySelectorAll('select').forEach(select => { select.style.cssText += ';background:#172235;color:#edf5ff;border:1px solid #42627d;padding:7px;border-radius:6px;max-width:100%'; });
             follow.querySelector('[data-follow-mode]').onchange = event => {
                 this.setFollowMode(event.target.value);
                 event.target.blur();
             };
-            follow.querySelector('[data-target-box-enabled]').onchange = e => {
-                this.boxEnabled = e.target.checked;
-                if (this.boxEnabled) this.setFollowMode('box');
-                else if (this.followMode === 'box') this.setFollowMode('mouse');
-                this.paintTargetBox();
-                this.boxStatus(this.boxEnabled ? 'Target box enabled. Right-click inside the game or use Place at cursor.' : 'Target box disabled.');
-                e.target.blur();
-            };
-            follow.querySelector('[data-target-box-place]').onclick = () => {
-                const mouse=this.lastGameCursor;
-                if (this.boxEnabled && mouse && this.placeTargetAtScreen?.(mouse.x,mouse.y)) {
-                    this.boxStatus('Target placed at last game cursor. Bots follow it after spawn.');
-                    this.app.toasts?.show('Bot target placed. Bots will navigate there after spawn.', 'info', 2000);
-                } else {
-                    this.boxStatus('Cannot place: enable target box, move cursor over game, then click Place at cursor.', true);
-                    this.app.toasts?.show('Enable the target box, move the mouse over the game, then click Place at cursor.', 'info', 2500);
-                }
-            };
-            follow.querySelector('[data-target-box-clear]').onclick = () => this.clearTargetBox();
             for (const [key, text] of [['follow','Follow / move'],['respawn','Auto respawn'],['split','Fast split'],['feed','Light feed']]) {
                 const label = document.createElement('label'), input = document.createElement('input');
                 input.type = 'checkbox'; input.dataset.option = key; input.checked = this.controls[key];

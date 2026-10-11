@@ -1,3 +1,5 @@
+> Historical notes from older versions. Target box feature was removed in v2.1.6. See MOUSE-FOLLOW-v2.1.6.md.
+
 # EON Senpa v2.1.3 — FFA video comparison and bot target box
 
 ## Video observations

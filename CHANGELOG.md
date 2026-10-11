@@ -15,3 +15,9 @@
 
 ## v2.1.4 — blue active ring, non-destructive skin tint, bot target hit testing
 See VISUAL-AND-BOX-2.1.4.md
+
+## 2.1.6
+- Removed visible BOT TARGET marker and right-click interception.
+- Mouse is the default invisible target for bot following and spectator positioning before spawn.
+- Added safe cursor cache for pressing Spawn from the bot panel.
+- Kept the server's spawn authority and other EON features unchanged.

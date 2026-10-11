@@ -38,3 +38,6 @@ See [FFA-VIDEO-AND-BOT-BOX-README.md](FFA-VIDEO-AND-BOT-BOX-README.md) for right
 
 ## v2.1.5
 See BOT-BOX-AND-RINGS-v2.1.5.md for the new ring toggle and target-box fixes.
+
+## v2.1.6 — Invisible mouse target
+There is no Bot Target square. In **Bot Controls**, use **Follow: Mouse (automatic, no box)** and leave **Follow / move** ON. Move the mouse inside the playing field. Spawn requests include the last valid cursor position as a spectator-positioning hint, then bots steer toward your cursor once the server reports living cells. The server controls the initial spawn location.

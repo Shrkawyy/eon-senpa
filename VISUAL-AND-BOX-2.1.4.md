@@ -1,3 +1,5 @@
+> Historical notes from older versions. Target box feature was removed in v2.1.6. See MOUSE-FOLLOW-v2.1.6.md.
+
 # EON v2.1.4 — Visuals & target-box fix
 
 - The **blue Multi Ring** follows the currently selected FFA socket after Tab. It no longer remains on Primary.
