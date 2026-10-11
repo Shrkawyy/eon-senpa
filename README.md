@@ -1,3 +1,5 @@
+# EON Senpa Dual FFA v2.1.1
+
 # EON Senpa - Dual FFA 2.1.0 (Experimental)
 
 # EON Senpa — License-screen removed (v2.0.0)

@@ -278,6 +278,13 @@
                 this.lastCloseCode = undefined;
                 this.probeUrl = target;
                 let address = connectionUrl(target);
+                if (this.isEonSecondary && officialUrl(target)) {
+                    // Separate *transport* identity only; both sockets authenticate
+                    // with the same official Senpa account. Never log the ID or JWT.
+                    const url = new URL(address);
+                    url.searchParams.set('tid', this.eonSecondaryTid || (this.eonSecondaryTid = randomId()));
+                    address = url.href;
+                }
                 if (this.isAuxiliary && officialUrl(target)) {
                     const url = new URL(address);
                     url.searchParams.set('po', 'iframe:' + root.location.host);

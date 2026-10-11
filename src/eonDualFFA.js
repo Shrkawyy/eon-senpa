@@ -43,7 +43,14 @@
   function switchTab(a){
     if(a) app=a;
     const mgr=app?.gameConnection,primary=mgr?.primary,secondary=mgr?.secondary;
-    if(!active||!isFFA()||!ready(primary)||!root.SenpaAccount?.snapshot?.().verified)return false;
+    if(!active){log('NOT_ENABLED','Turn on DUAL FFA first');return false;}
+    if(!isFFA()){log('NOT_FFA','Dual connection works only on Free For All');return false;}
+    if(!ready(primary)){log('PRIMARY_NOT_READY','Wait for the first connection to finish');return false;}
+    if(!root.SenpaAccount?.snapshot?.().verified){
+      log('ACCOUNT_UNVERIFIED','Verify the main Senpa account before connecting Player 2');
+      app?.toasts?.show('Verify your main Senpa account before using Dual FFA.', 'info', 4000);
+      return false;
+    }
     if(primary.tabs.length>1) return primary.switchPlayer();
     if(ready(secondary)) {
       const target=mgr.current===primary?secondary:primary;
@@ -53,11 +60,11 @@
       return true;
     }
     if(terminalFailure) {log('BLOCKED','Secondary rejected; disable and re-enable to retry');return false;}
-    if(secondary||busy) return false;
+    if(secondary||busy){log('SECONDARY_PENDING',secondary?'Second socket already exists':'Second socket still starting');return false;}
     busy=true;
     log('CONNECT_SECONDARY','Requesting a separate game connection with the SAME verified Senpa account');
     const client=app.lobby.initClient(app.player.serverUrl,{secondary:true});
-    if(!client){busy=false;log('NOT_STARTED','Primary connection not ready or server changed');return false;}
+    if(!client){busy=false;log('NOT_STARTED','FFA second connection was not created (primary not ready, different server, or existing socket)');return false;}
     const onReady=()=>{
       busy=false;
       if(!active||!ready(client)||!isFFA()||app.gameConnection.secondary!==client)return;
@@ -88,7 +95,7 @@
   }
   function initialize(instance){
     app=instance;
-    try{active=localStorage.getItem(KEY)==='1';}catch{active=false;}
+    try{active=localStorage.getItem(KEY)!=='0';}catch{active=true;}
     if(panel)return;
     panel=document.createElement('button');panel.type='button';panel.id='eon-dual-ffa-toggle';
     panel.style.cssText='position:fixed;left:12px;bottom:85px;z-index:800;background:#142536;color:#eff9ff;padding:7px 11px;border:1px solid #415363;border-radius:6px;font:600 12px system-ui;cursor:pointer';

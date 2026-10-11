@@ -342,20 +342,39 @@
     function updateStats(stage, delta) {
         const container = document.getElementById('stats-hud');
         if (!container) return;
-        const client = stage.app.gameConnection.current;
+        const session = stage.app.gameConnection, client = session.current;
         let html = '<div class="stat-badge">' + Math.round(1000 / delta) + ' FPS</div>';
+        const massText = p => {
+            const mass = Number(p?.totalMass) || 0;
+            return mass < 1000 ? Math.floor(mass) : (mass / 1000).toFixed(1) + 'k';
+        };
+        const badge = (index, tab, selected, extra = '') =>
+            '<span class="stat-badge native-player-tab' + (selected ? ' active' : '') +
+            '">Player ' + index + ' · ' + massText(tab?.player) + ' · ' +
+            (tab?.player?.cells?.length || 0) + ' cells' + extra + '</span>';
         if (client?.clientReady) {
             client.updatePlayerPosition();
             html += '<div class="stat-badge">' + Math.round(client.ping) + 'ms</div>';
-            for (const tab of client.tabs) {
-                const mass = tab.player.totalMass < 1000 ? Math.floor(tab.player.totalMass) : (tab.player.totalMass / 1000).toFixed(1) + 'k';
-                html += '<span class="stat-badge native-player-tab' + (tab.index === client.tabIndex ? ' active' : '') +
-                    '">Player ' + (tab.index + 1) + ' · ' + mass + ' · ' + tab.player.cells.length + ' cells</span>';
+            const primary = session.primary || client;
+            const second = session.secondary;
+            const showDual = isFFA(primary) && !!root.EonDualFFA?.enabled() && primary.tabs.length === 1;
+            if (showDual) {
+                // Display two identities only as a UI affordance. A 0-cell badge
+                // is NOT evidence of server allocation or successful connection.
+                html += badge(1, primary.tabs[0], client === primary);
+                const readySecond = !!(second?.clientReady && second.isConnected && second.tabs.length);
+                html += badge(2, readySecond ? second.tabs[0] : null, client === second,
+                    readySecond ? '' : second ? ' · connecting' : ' · press Tab');
+            } else {
+                for (const tab of client.tabs)
+                    html += badge(tab.index + 1, tab, tab.index === client.tabIndex);
             }
-            if (isFFA(client)) {
-                const auth = accountState(), dual = stage.app.gameConnection.secondary;
-                const label = dual ? ' · Dual FFA: ' + (dual.clientReady ? '2 sockets ready' : 'connecting') : '';
-                html += '<span class="stat-badge">FFA Multi: ' + client.tabs.length + ' server slot(s)' + label + ' · ' +
+            if (isFFA(primary)) {
+                const auth = accountState();
+                const dualState = showDual ? ' · Dual FFA: ' +
+                    (second ? (second.clientReady ? 'second connected' : 'connecting') : 'press Tab for P2') : '';
+                html += '<span class="stat-badge">FFA Multi: ' + primary.tabs.length +
+                    ' native slot(s)' + dualState + ' · ' +
                     (auth.verified ? 'Account verified' : auth.signedIn ? 'Login pending' : 'Guest') + '</span>';
             }
         }

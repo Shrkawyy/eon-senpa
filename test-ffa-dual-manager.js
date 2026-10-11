@@ -7,7 +7,7 @@ vm.runInNewContext(fs.readFileSync(__dirname+'/src/eonNativeMulti.js','utf8'),ro
 vm.runInNewContext(fs.readFileSync(__dirname+'/src/eonDualFFA.js','utf8'),root);
 const session=new root.EonNativeMulti.GameConnection();let openCount=0;const make=(second=false)=>({isEonSecondary:second,isConnected:true,clientReady:true,authCompleted:true,tabs:[{player:{cells:[]}}],probeUrl:'wss://eu1.senpa.io:7101',app:app,stopAllFeeding(){},isDead:true,sendSpawn(){this.spawns=(this.spawns||0)+1;},close(){this.closed=true},events:{once(event,callback){this.callback=callback}}});
 const app={player:{serverUrl:'wss://eu1.senpa.io:7101'},gameConnection:session,lobby:{initClient(url,opts){openCount++;const c=make(true);session.addConnection(c);this.last=c;return c;}},stage:{nextStatsTime:100}};
-const primary=make(false);session.addConnection(primary);root.EonDualFFA.initialize(app);assert.equal(root.EonDualFFA.enabled(),false);assert.equal(session.current,primary);
+const primary=make(false);session.addConnection(primary);root.EonDualFFA.initialize(app);assert.equal(root.EonDualFFA.enabled(),true);assert.equal(session.current,primary);
 root.EonDualFFA.setEnabled(true);assert.equal(root.EonDualFFA.switchTab(app),true);assert.equal(openCount,1);assert.equal(session.length,2);
 app.lobby.last.events.callback();assert.equal(session.current,session.secondary);assert.equal(session.secondary.spawns,1);
 root.EonDualFFA.switchTab(app);assert.equal(session.current,primary);assert.equal(session.totalPlaying,0);
