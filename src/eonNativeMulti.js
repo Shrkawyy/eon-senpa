@@ -11,6 +11,42 @@
         return !!option || /free\s*for\s*all|\bffa\b|nemesis/i.test(
             document.querySelector('.server-select-trigger .selected-text')?.textContent || '');
     }
+    // Diagnostics never read the actual JWT, access keys or cookies.
+    function accountState() {
+        const state = root.SenpaAccount?.snapshot?.() || {};
+        return {verified:!!state.verified, signedIn:!!state.signedIn,
+            status:String(state.status || 'unknown'),
+            error:state.error ? String(state.error).slice(0, 130) : ''};
+    }
+    function showReconnectOffer(client) {
+        if (!isFFA(client) || !client.clientReady || client.tabs?.length !== 1 ||
+            !accountState().verified || client.eonSlotAuthVerified || client.eonOfferedReconnect) return;
+        client.eonOfferedReconnect = true;
+        record(client, 'AUTH_FINISHED_AFTER_HANDSHAKE', 'Account verified after the server allocated 1 slot');
+        let notice = document.getElementById('eon-ffa-auth-reconnect');
+        if (notice) notice.remove();
+        notice = document.createElement('div');
+        notice.id = 'eon-ffa-auth-reconnect';
+        notice.style.cssText = 'position:fixed;left:12px;top:65px;z-index:2000;padding:10px 12px;background:#101b2a;color:#e8f1fb;border:1px solid #2a586b;border-radius:8px;max-width:285px;font:13px sans-serif;box-shadow:0 8px 25px #0009';
+        const label = document.createElement('div');
+        label.textContent = 'FFA gave 1 slot before login verification finished. You can reconnect to try negotiating slots again.';
+        label.style.marginBottom = '8px';
+        const action = document.createElement('button');
+        action.textContent = 'Reconnect FFA after login';
+        action.style.cssText = 'background:#1d597d;border:1px solid #398bb0;color:white;border-radius:5px;padding:6px 8px;cursor:pointer';
+        action.addEventListener('click', () => {
+            if (client.tabs.some(tab => tab.player.cells.length > 0) &&
+                !root.confirm('Reconnecting will disconnect your current player. Continue?')) return;
+            notice.remove();
+            root.EonFFAMultiDiagnostics.reconnectAfterLogin();
+        });
+        const dismiss = document.createElement('button');
+        dismiss.textContent = 'Dismiss';
+        dismiss.style.cssText = 'margin-left:8px;background:transparent;color:#b0bdc9;border:0;cursor:pointer';
+        dismiss.addEventListener('click', () => notice.remove());
+        notice.append(label,action,dismiss);
+        document.body.append(notice);
+    }
     function record(client, event, detail = '') {
         if (client.isAuxiliary) return;
         const entries = client.eonMultiHistory || (client.eonMultiHistory = []);
@@ -23,12 +59,38 @@
     root.EonFFAMultiDiagnostics = {
         status() {
             const client = root.app?.gameConnection?.current;
-            if (!client) return {connected:false, reason:'No active game connection'};
+            const session = accountState();
+            if (!client) return {connected:false, reason:'No active game connection', mainAccount:session};
             return {connected:!!client.isConnected, serverSlots:client.tabs?.length || 0,
                 selectedSlot:(client.tabIndex ?? 0) + 1, modeFFA:isFFA(client),
                 aliveSlots:client.tabs?.filter(t => t.player.cells.length > 0).length || 0,
-                closeCode:client.lastCloseCode ?? null,
+                mainAccount:session, verifiedWhenSlotsGranted:client.eonSlotAuthVerified ?? null,
+                closeCode:client.lastCloseCode ?? null, closeReason:client.lastCloseReason || '',
+                selectedServer:client.probeUrl || null,
+                note:client.tabs?.length === 1 ? 'Server allocated one slot on this game connection; ONYX uses a different two-connection architecture.' : null,
                 events:(client.eonMultiHistory || []).slice()};
+        },
+        authChanged() {
+            const client = root.app?.gameConnection?.current;
+            if (!client || client.isAuxiliary) return;
+            if (accountState().verified) showReconnectOffer(client);
+        },
+        reconnectAfterLogin() {
+            const app = root.app, client = app?.gameConnection?.current;
+            if (!app || !client || !client.isConnected) return false;
+            if (!accountState().verified) { app.toasts?.show('Log in and verify your Senpa account first.', 'info', 4000); return false; }
+            if (client.eonReconnectRequested) return false;
+            client.eonReconnectRequested = true;
+            record(client, 'MANUAL_RECONNECT', 'Reconnecting after main account verification');
+            const url = app.player.serverUrl;
+            // Do not spawn an additional simultaneous socket. Close the old
+            // connection and let lobby remove it before opening the new one.
+            client.events.once('disconnected', () => root.setTimeout(() => {
+                if (!app.gameConnection.current && !app.replayManager?.isReplay)
+                    app.lobby.initClient(url);
+            }, 60));
+            client.close();
+            return true;
         },
         exportJSON() {
             const json = JSON.stringify(this.status(), null, 2);
@@ -68,7 +130,10 @@
             this.clientId = ids[0] ?? null;
             this.spectate.enabled = false;
             pendingTab = null;
-            record(this, 'SERVER_SLOTS', this.tabs.length + ' native player slot(s) granted');
+            this.eonSlotAuthVerified = accountState().verified;
+            record(this, 'SERVER_SLOTS', this.tabs.length + ' native player slot(s) granted; main-account=' +
+                (this.eonSlotAuthVerified ? 'verified' : accountState().signedIn ? 'pending' : 'guest'));
+            if (this.tabs.length === 1) root.setTimeout(() => showReconnectOffer(this), 200);
             // A one-slot handshake cannot be turned into two players locally.
             // Explain the real limitation rather than issuing invalid spawn packets.
             if (this.tabs.length < 2 && isFFA(this)) {
@@ -262,7 +327,11 @@
                 html += '<span class="stat-badge native-player-tab' + (tab.index === client.tabIndex ? ' active' : '') +
                     '">Player ' + (tab.index + 1) + ' · ' + mass + ' · ' + tab.player.cells.length + ' cells</span>';
             }
-            if (isFFA(client)) html += '<span class="stat-badge">FFA Multi: ' + client.tabs.length + ' server slot(s)</span>';
+            if (isFFA(client)) {
+                const auth = accountState();
+                html += '<span class="stat-badge">FFA Multi: ' + client.tabs.length + ' slot(s) · ' +
+                    (auth.verified ? 'Account verified' : auth.signedIn ? 'Login pending' : 'Guest') + '</span>';
+            }
         }
         container.innerHTML = html;
     }

@@ -211,6 +211,7 @@
             }, true);
         }
         account.subscribe(() => {
+            root.EonFFAMultiDiagnostics?.authChanged();
             const token = account.getToken();
             if (token === lastToken) return;
             lastToken = token;
@@ -223,10 +224,17 @@
                 }
             }
         });
-        account.initialize().catch(() => {});
-        // initialize() restores the saved token synchronously. Session refresh
-        // continues while this single connection completes its handshake.
-        app.lobby.initClient(app.player.serverUrl);
+        // A fresh page previously opened the game socket before Senpa checked
+        // a saved login. On FFA that can leave the initial game handshake with
+        // a guest slot allocation. Wait for that first account check only when
+        // a saved token exists. Guests continue to connect without delay.
+        const accountStart = account.initialize().catch(() => {});
+        const startingSession = account.snapshot();
+        if (startingSession.signedIn && !startingSession.verified) {
+            Promise.race([accountStart, new Promise(resolve => root.setTimeout(resolve, 5500))])
+                .finally(() => { if (!app.gameConnection.current && !app.replayManager?.isReplay)
+                    app.lobby.initClient(app.player.serverUrl); });
+        } else app.lobby.initClient(app.player.serverUrl);
     }
     root.EonSenpaIntegration = { patchClient, initialize, solveVerification };
 })(window);
