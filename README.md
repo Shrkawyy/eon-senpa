@@ -34,3 +34,7 @@ See `DUAL-FFA-FIX-v2.1.2.md` for the merged FFA scene, red/white Multi colors, a
 
 ## v2.1.3 Bot Target Box
 See [FFA-VIDEO-AND-BOT-BOX-README.md](FFA-VIDEO-AND-BOT-BOX-README.md) for right-click placement and server-side spawn limitations.
+
+
+## v2.1.5
+See BOT-BOX-AND-RINGS-v2.1.5.md for the new ring toggle and target-box fixes.

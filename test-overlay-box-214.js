@@ -4,7 +4,7 @@ const canvas={getBoundingClientRect(){return rect;},contains(){return false;}};
 const overlay={closest(){return null;}};
 const ui={closest(){return true;}};
 const root={innerWidth:800,innerHeight:600,addEventListener(type,fn){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(fn);}};
-const document={hidden:false,body:{append(){}},createElement(){return {style:{},setAttribute(){},hidden:false};},elementsFromPoint(){return [overlay,canvas]}};
+const document={hidden:false,body:{append(){}},createElement(){return {style:{},setAttribute(){},hidden:false};},elementsFromPoint(){return [overlay]}};
 vm.runInNewContext(fs.readFileSync(__dirname+'/src/eonSenpaBots.js','utf8'),{window:root,document,URL,console,performance});
 const m=Object.create(root.EonSenpaBots.Manager.prototype);
 const main={probeUrl:'wss://eu1.senpa.io:7101',isConnected:true,clientReady:true,authCompleted:true};

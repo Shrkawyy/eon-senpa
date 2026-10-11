@@ -28,10 +28,10 @@ assert.equal(localSkin(app,{clientOrigin:A}),'https://api.senpa.io/u/primary','P
 assert.equal(localSkin(app,{clientOrigin:B}),'https://api.senpa.io/u/secondary','P2 skin persists after Tab');
 const renderer=fs.readFileSync(__dirname+'/src/test.js','utf8');
 assert(renderer.includes('c && dualActive && h && !f'),'draws subtle overlay above existing skin');
-assert(renderer.includes('dualActive ? dualVisual.ring'),'active ring uses current socket');
+assert(renderer.includes('if (s && !this.settings.themeUseMultiboxCellColor && t.clientOrigin)'), 'ring disabled in cell-color mode');
 assert(!renderer.includes('r = null; // opaque skins'),'do not disable skin on color mode');
 const bots=fs.readFileSync(__dirname+'/src/eonSenpaBots.js','utf8');
-assert(bots.includes('document.elementsFromPoint?.'),'click through decorative HUD');
+assert(bots.includes('Hit testing by rect') && !bots.includes('stack.includes(canvas)'), 'click-through uses game canvas boundary, not obscured stacking');
 assert(bots.includes('accountSection.before(follow);'),'box accessible before long account list');
 assert(bots.includes('this.lastGameCursor'),'fallback captures last in-game cursor');
-console.log('PASS: active white/inactive red after Tab, blue ring, both skins, box through overlay and fallback');
+console.log('PASS: active white/inactive red after Tab; blue ring only in ring mode; both skins; target box fallback');

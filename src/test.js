@@ -7012,11 +7012,11 @@
                                 this.ctx.fill();
                                 this.ctx.globalAlpha = e;
                             }
-                            if (s && (!this.settings.themeUseMultiboxCellColor || dualActive) && t.clientOrigin) {
+                            if (s && !this.settings.themeUseMultiboxCellColor && t.clientOrigin) {
                                 var p = this.app.gameConnection.current
                                   , y = dualActive ? dualVisual.active : t.clientOrigin.index === p.tabIndex
                                   , v = this.settings.themeMultiboxRingWidth;
-                                // Blue selection outline follows Tab even in Cell Color mode.
+                                // Multi rings are drawn ONLY in ring mode; cell-color mode hides all outlines.
                                 this.ctx.lineWidth = t.r / 100 * v,
                                 this.ctx.strokeStyle = dualActive ? dualVisual.ring :
                                     y ? this.settings.themeMultiboxRingColor : this.settings.themeMultiboxRingColorInactive;
