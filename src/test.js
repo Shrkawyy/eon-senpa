@@ -4837,8 +4837,17 @@
                             else this.app.toasts.show("Unknown verification type: " + data.type, "error", 5000);
                         });
                         client.events.on("died", () => {
-                            if (secondary && session.current !== client) return;
+                            // One game socket dying is NOT the death of Dual FFA.
+                            // Keep gameplay visible until every connected player's cells are gone.
+                            const surviving = session.clients.find(other =>
+                                other.clientReady && other.tabs?.some(tab => tab.player.cells.length > 0));
                             this.app.input.states.macroFeed = false;
+                            if (surviving) {
+                                if (this.app.settings.get("autoSwitchCells") && session.current !== surviving)
+                                    session.setActive(surviving);
+                                if (this.isVisible) this.hide();
+                                return;
+                            }
                             if (this.app.settings.get("showMenuOnDeath")) this.show();
                             else client.spectate.enabled = true;
                         });
@@ -6690,36 +6699,50 @@
                         this.updateCamera(); this.updateCameraBound();
                         this.updateMouseWorldPosition();
                         if (!this.app.controls && time >= this.nextSendCursorTime) { this.nextSendCursorTime = time + this.settings.sendCursorInterval; this.sendCursorPosition(); }
-                        if (!client || client.isSyncing) return;
+                        if (!client || (client.isSyncing && !this.app.gameConnection.clients.some(c =>
+                            c !== client && c.clientReady && !c.isSyncing))) return;
                         const speed = this.settings.cellAnimationSpeed, eat = this.settings.showEatAnimation;
                         const sizeSpeed = this.settings.cellSizeAnimationSpeed, eatSpeed = this.settings.cellEatAnimationSpeed, spawnSpeed = this.settings.cellSpawnAnimationSpeed;
-                        const animationTime = window.EonSenpaMotion.time(client, time), replay = this.app.replayManager;
+                        const replay = this.app.replayManager;
                         const animationDelta = client.isReplay && replay?.isReplay ? (replay.paused ? 0 : delta * replay.playbackRate) : delta;
-                        const adaptive = window.EonSenpaMotion.enabled(client);
-                        const move = cell => cell.flags.isFood ? cell.moveFood(animationDelta, animationTime, eatSpeed, eat, spawnSpeed) : cell.moveCell(animationDelta, animationTime, speed, eat, adaptive, sizeSpeed, eatSpeed, spawnSpeed);
-                        for (const cell of client.cellsToBeRendered) {
-                            move(cell);
-                            if (cell.flags.isVirus) this.cellsFrameVirus.push(cell);
-                            if (cell.flags.isFood) this.cellsFrameFood.push(cell); else this.cellsFrame.push(cell);
-                        }
-                        for (let index = client.cellsToBeRemoved.length - 1; index >= 0; index--) {
-                            const cell = client.cellsToBeRemoved[index]; move(cell);
-                            if (cell.fadeOutAnimationCompleted) { client.cellsToBeRemoved.splice(index, 1); client.cellPool.release(cell); }
-                            else this.cellsFrameRemoved.push(cell);
-                        }
-                        // Secondary world is decoded independently. Show its own
-                        // cells when they are outside the active socket's viewport.
-                        const seen = new Set(this.cellsFrame.map(cell => cell.id));
-                        for (const other of this.app.gameConnection.clients) {
-                            if (other === client || !other.clientReady) continue;
-                            const timeOther = window.EonSenpaMotion.time(other, time);
-                            for (const tab of other.tabs || []) for (const cell of tab.player.cells) {
-                                if (seen.has(cell.id)) continue;
-                                seen.add(cell.id);
-                                cell.moveCell(animationDelta, timeOther, speed, eat, window.EonSenpaMotion.enabled(other), sizeSpeed, eatSpeed, spawnSpeed);
-                                this.cellsFrame.push(cell);
+                        // Each FFA socket receives its OWN viewport. Rendering only
+                        // current.cellsToBeRendered made all other players/viruses/food
+                        // vanish when Tab switched sockets. Merge both snapshots per frame.
+                        // Prefer the authoritative OWN-cell instance when both sockets
+                        // report the same global cell ID, so both colors/names stay stable.
+                        const byId = new Map();
+                        const removed = new Map();
+                        const sources = [client, ...this.app.gameConnection.clients.filter(c => c !== client)];
+                        for (const source of sources) {
+                            if (!source.clientReady || source.isSyncing) continue;
+                            const sourceTime = window.EonSenpaMotion.time(source, time);
+                            const adaptive = window.EonSenpaMotion.enabled(source);
+                            const move = cell => cell.flags.isFood ?
+                                cell.moveFood(animationDelta, sourceTime, eatSpeed, eat, spawnSpeed) :
+                                cell.moveCell(animationDelta, sourceTime, speed, eat, adaptive, sizeSpeed, eatSpeed, spawnSpeed);
+                            for (const cell of source.cellsToBeRendered) {
+                                move(cell);
+                                const existing = byId.get(cell.id);
+                                // Own cells always outrank remote copies; active
+                                // socket wins the tie so the view never flickers.
+                                if (!existing || (!existing.clientOrigin && cell.clientOrigin))
+                                    byId.set(cell.id, cell);
+                            }
+                            for (let i = source.cellsToBeRemoved.length - 1; i >= 0; i--) {
+                                const cell = source.cellsToBeRemoved[i];
+                                move(cell);
+                                if (cell.fadeOutAnimationCompleted) {
+                                    source.cellsToBeRemoved.splice(i, 1);
+                                    source.cellPool.release(cell);
+                                } else if (!removed.has(cell.id)) removed.set(cell.id, cell);
                             }
                         }
+                        for (const cell of byId.values()) {
+                            if (cell.flags.isVirus) this.cellsFrameVirus.push(cell);
+                            if (cell.flags.isFood) this.cellsFrameFood.push(cell);
+                            else this.cellsFrame.push(cell);
+                        }
+                        for (const [id, cell] of removed) if (!byId.has(id)) this.cellsFrameRemoved.push(cell);
                         this.cellsFrame.sort((a, b) => a.r === b.r ? a.id - b.id : a.r - b.r);
                     }
                 }, {
@@ -6953,13 +6976,23 @@
                         if (t.flags.isVirus)
                             this.drawVirusShape(t);
                         else {
-                            var a = (this.app.gameConnection.current?.tabs.length || 0) >= 2
-                              , s = t.clientOrigin && a
+                            const multiSession = this.app.gameConnection;
+                            const dualActive = !!(window.EonDualFFA?.enabled() && multiSession.secondary?.clientReady);
+                            const ownerIsSecondary = dualActive && multiSession.secondary.tabs.includes(t.clientOrigin);
+                            var a = dualActive || (multiSession.current?.tabs.length || 0) >= 2
+                              , s = !!t.clientOrigin && a
                               , c = s && this.settings.themeUseMultiboxCellColor
                               , l = t.colorHex;
-                            if (c && t.clientOrigin) {
-                                var u = this.app.gameConnection.current;
-                                l = t.clientOrigin.index === u.tabIndex ? this.settings.themeMultiboxCellColor : this.settings.themeMultiboxCellColorInactive
+                            if (c) {
+                                if (dualActive) {
+                                    // Fixed identity: P1 = chosen MULTI CELL COLOR (red),
+                                    // P2 = chosen INACTIVE color (white), independent of Tab.
+                                    l = ownerIsSecondary ? this.settings.themeMultiboxCellColorInactive : this.settings.themeMultiboxCellColor;
+                                    r = null; // opaque skins must not cover chosen Multi colors
+                                } else {
+                                    var u = multiSession.current;
+                                    l = t.clientOrigin.index === u.tabIndex ? this.settings.themeMultiboxCellColor : this.settings.themeMultiboxCellColorInactive;
+                                }
                             }
                             var h = null
                               , f = !1
@@ -6975,7 +7008,7 @@
                             this.ctx.globalAlpha = e,
                             s && !this.settings.themeUseMultiboxCellColor && t.clientOrigin) {
                                 var p = this.app.gameConnection.current
-                                  , y = t.clientOrigin.index === p.tabIndex
+                                  , y = dualActive ? !ownerIsSecondary : t.clientOrigin.index === p.tabIndex
                                   , v = this.settings.themeMultiboxRingWidth;
                                 this.ctx.lineWidth = t.r / 100 * v,
                                 this.ctx.strokeStyle = y ? this.settings.themeMultiboxRingColor : this.settings.themeMultiboxRingColorInactive;

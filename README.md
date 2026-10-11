@@ -27,3 +27,7 @@ This fork removes the **legacy EON access-key dialog and license heartbeat** fro
 - **Multiple login slots do not establish independent Facebook/Discord sessions** in one browser. No promise of 4 players per account or 10 concurrent accounts.
 - Static JavaScript syntax / packaging checks are not a successful live Senpa connection test.
 - **BOT DIAGNOSTICS** is intended to show bot events and safe error details. Do not publicly share account tokens or unredacted network logs.
+
+
+## v2.1.2 update
+See `DUAL-FFA-FIX-v2.1.2.md` for the merged FFA scene, red/white Multi colors, and death/lobby correction.

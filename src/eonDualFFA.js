@@ -107,6 +107,8 @@
   const api={initialize,enabled:()=>active,switchTab,onDisconnected,setEnabled,
     status:()=>({enabled:active,selectedServer:app?.player?.serverUrl||'',modeFFA:isFFA(),
       mainVerified:!!root.SenpaAccount?.snapshot?.().verified,
+      alivePlayers:app?.gameConnection?.totalPlaying||0,
+      mergedWorld:(app?.gameConnection?.clients||[]).map(c=>({kind:c.isEonSecondary?'secondary':'primary', visibleCells:c.cellsToBeRendered?.length||0, viruses:c.cellsToBeRendered?.filter(cell=>cell.flags?.isVirus).length||0})),
       clients:app?.gameConnection?.clients.map(c=>({type:c.isEonSecondary?'secondary':'primary',
          ready:ready(c),slots:c.tabs?.length||0,closeCode:c.lastCloseCode??null,
          closeReason:c.lastCloseReason||''}))||[],terminalFailure,history:history.slice()}),

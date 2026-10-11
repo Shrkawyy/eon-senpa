@@ -27,7 +27,7 @@
   {
     "order": 6,
     "name": "eonNativeMulti.js",
-    "bytes": 22545
+    "bytes": 22675
   },
   {
     "order": 7,
@@ -62,7 +62,7 @@
   {
     "order": 13,
     "name": "eonDualFFA.js",
-    "bytes": 6055
+    "bytes": 6341
   },
   {
     "order": 14,
@@ -92,7 +92,7 @@
   {
     "order": 19,
     "name": "test.js",
-    "bytes": 699525
+    "bytes": 701858
   },
   {
     "order": 20,

@@ -111,6 +111,7 @@
         get clients() { return this._clients.slice(); }
         get length() { return this._clients.length; }
         get totalPlaying() { return this._clients.reduce((n,c) => n + (c.tabs?.filter(t => t.player.cells.length).length || 0), 0); }
+        get hasAnyLivePlayer() { return this._clients.some(c => c.clientReady && c.tabs?.some(t => t.player.cells.length > 0)); }
         addConnection(client) {
             if (this._clients.includes(client)) return;
             if (this._clients.length >= 2 || (!client.isEonSecondary && this.primary) ||
