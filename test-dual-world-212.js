@@ -31,7 +31,7 @@ const enemyFromP=create(10,'cell'), enemyFromS=create(10,'cell'), playerOwn=crea
 const virus=create(30,'virus'),food=create(40,'food'), otherEnemy=create(50,'cell');
 let primary={clientReady:true,isSyncing:false,cellsToBeRendered:[enemyFromP,playerRemote],cellsToBeRemoved:[],isReplay:false};
 let second={clientReady:true,isSyncing:false,cellsToBeRendered:[enemyFromS,playerOwn,virus,food,otherEnemy],cellsToBeRemoved:[],isReplay:false};
-let stage={app:{gameConnection:{clients:[primary,second]},replayManager:{}},cellsFrame:[],cellsFrameVirus:[],cellsFrameFood:[],cellsFrameRemoved:[]};
+let stage={app:{gameConnection:{primary,clients:[primary,second]},replayManager:{}},cellsFrame:[],cellsFrameVirus:[],cellsFrameFood:[],cellsFrameRemoved:[]};
 merge.call(stage,primary,100,16,1,true,1,1,1,{EonSenpaMotion:{time:()=>100,enabled:()=>false}});
 assert.equal(stage.cellsFrame.find(c=>c.id===20),playerOwn,'own player wins dedupe');
 assert.equal(stage.cellsFrame.find(c=>c.id===10),enemyFromP,'active non-owned wins tie');
@@ -44,4 +44,5 @@ stage.cellsFrame.length=stage.cellsFrameVirus.length=stage.cellsFrameFood.length
 merge.call(stage,second,116,16,1,true,1,1,1,{EonSenpaMotion:{time:()=>116,enabled:()=>false}});
 assert.deepEqual(stage.cellsFrame.map(c=>c.id),[10,20,30,50]);
 assert.equal(stage.cellsFrame.find(c=>c.id===20),playerOwn);
+assert.equal(stage.cellsFrame.find(c=>c.id===10),enemyFromP,'primary copy stays stable after Tab');
 console.log('PASS: global death/lobby (5 cases), stable merged world over Tab, virus + food, ownership + color invariants');

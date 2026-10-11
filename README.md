@@ -31,3 +31,6 @@ This fork removes the **legacy EON access-key dialog and license heartbeat** fro
 
 ## v2.1.2 update
 See `DUAL-FFA-FIX-v2.1.2.md` for the merged FFA scene, red/white Multi colors, and death/lobby correction.
+
+## v2.1.3 Bot Target Box
+See [FFA-VIDEO-AND-BOT-BOX-README.md](FFA-VIDEO-AND-BOT-BOX-README.md) for right-click placement and server-side spawn limitations.

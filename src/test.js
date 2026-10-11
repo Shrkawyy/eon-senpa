@@ -6712,7 +6712,7 @@
                         // report the same global cell ID, so both colors/names stay stable.
                         const byId = new Map();
                         const removed = new Map();
-                        const sources = [client, ...this.app.gameConnection.clients.filter(c => c !== client)];
+                        const sources = [this.app.gameConnection.primary || client, ...this.app.gameConnection.clients.filter(c => c !== (this.app.gameConnection.primary || client))];
                         for (const source of sources) {
                             if (!source.clientReady || source.isSyncing) continue;
                             const sourceTime = window.EonSenpaMotion.time(source, time);
@@ -6723,8 +6723,8 @@
                             for (const cell of source.cellsToBeRendered) {
                                 move(cell);
                                 const existing = byId.get(cell.id);
-                                // Own cells always outrank remote copies; active
-                                // socket wins the tie so the view never flickers.
+                                // Own cells always outrank remote copies; primary
+                                // socket wins ties even when Tab changes camera.
                                 if (!existing || (!existing.clientOrigin && cell.clientOrigin))
                                     byId.set(cell.id, cell);
                             }
