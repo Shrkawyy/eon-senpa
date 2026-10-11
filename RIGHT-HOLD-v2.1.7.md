@@ -1,4 +1,4 @@
-# EON Senpa v2.1.7 — Hold right mouse to direct bots
+# EON Senpa v2.1.8 — Hold right mouse to direct bots
 
 This patch keeps existing FFA Dual, accounts, bot connections, and the regular spawn system. The server chooses initial spawn positions.
 
@@ -12,8 +12,8 @@ This patch keeps existing FFA Dual, accounts, bot connections, and the regular s
 
 ## Test
 1. Disable older EON userscripts, install `Senpa-Recovered.user.js` and open Senpa.
-2. Sign into a bot account and connect/spawn a bot via bot panel. Select Follow: **Right-click hold (blank box)** and Follow / move ON.
-3. Hold right-click over the game: blank box appears and bot follows. Move pointer while holding.
+2. Sign into a bot account and connect/spawn a bot via bot panel. Select Follow: **Right-click hold (dragon box)** and Follow / move ON.
+3. Hold right-click over the game: dragon box appears and bot follows. Move pointer while holding.
 4. Release: box instantly hides, and (default) bot sockets disconnect; select Stop movement only if you prefer to keep them connected.
 
 Not verified against live Senpa; tested locally for state transitions, movement gating and syntax.

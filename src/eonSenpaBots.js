@@ -101,6 +101,7 @@
             // The user can choose to keep bot connections alive on release.
             // Default follows the explicit request: disconnect bot connections.
             this.rightReleaseAction = 'disconnect';
+            this.rightDragonColor = '#7af7ff';
             this.rightMarker = null;
             this.rightContextSuppressUntil = 0;
             // Each account has isolated local token storage and its own two helper connections.
@@ -173,10 +174,10 @@
         rightHoldAllowed(event) {
             if (this.followMode !== 'mouse' || document.hidden ||
                 this.app.replayManager?.isReplay || this.app.settingsMenu?.isVisible ||
-                this.app.lobby?.isVisible || this.typing(event.target)) return false;
+                this.typing(event.target)) return false;
             if (event.target?.closest?.(
                 '#eon-bots-panel,#eon-dual-ffa-toggle,button,input,textarea,select,a,'+
-                '[contenteditable="true"],[role="dialog"],.lobby-overlay,.settings-overlay')) return false;
+                '[contenteditable="true"]')) return false;
             const rect=this.app.stage?.canvas?.getBoundingClientRect?.();
             return !!rect && rect.width>0 && rect.height>0 &&
                 Number.isFinite(event.clientX) && Number.isFinite(event.clientY) &&
@@ -238,22 +239,38 @@
             console.info('[EON Bot RightHold] RELEASE',reason,disconnect ? 'disconnect' : 'stop movement');
         }
         initializeMouseTracking() {
+            const dragonSvg = `
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+                    <defs>
+                        <linearGradient id="eonDragonGlow" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stop-color="#d8fdff"/>
+                            <stop offset="55%" stop-color="#7af7ff"/>
+                            <stop offset="100%" stop-color="#1ec7ff"/>
+                        </linearGradient>
+                    </defs>
+                    <path d="M51 14c-5 1-9 4-12 8-3-3-7-5-11-5 2 3 3 6 3 9-5 1-9 5-10 11-1 5 0 10 3 14 2 2 5 4 8 5-2-3-2-6-2-8 4 1 8 0 11-2 2-1 3-3 5-5 2 3 5 5 8 7 1-4 1-8-1-12-1-3-4-6-8-7 1-3 3-5 6-6l-4-3 4-6Z" fill="url(#eonDragonGlow)" stroke="#d8fdff" stroke-width="2.2" stroke-linejoin="round"/>
+                    <circle cx="39" cy="20" r="2.2" fill="#ffffff"/>
+                </svg>`;
             const marker=this.rightMarker=document.createElement('div');
             marker.id='eon-bot-hold-indicator';
             marker.setAttribute('aria-hidden','true');
-            marker.style.cssText='position:fixed;top:0;left:0;transform:translate(-50%,-50%);width:45px;height:45px;'+
-                'border:3px solid #4ef0de;border-radius:7px;background:#08cfb526;'+
-                'box-shadow:0 0 13px #24e6d67a;z-index:1004;pointer-events:none;display:none';
-            marker.style.display='none';
-            // Do not populate any label or text inside the box.
+            marker.style.cssText='position:fixed;top:0;left:0;transform:translate(-50%,-50%);width:58px;height:58px;'+
+                'border:2px solid #5ff7ff;border-radius:12px;background:linear-gradient(180deg,#0c2438d6,#08141dd8);'+
+                'box-shadow:0 0 0 1px #cfffff33 inset,0 0 18px #37efff66,0 0 34px #1fb5ff44;'+
+                'z-index:2147483646;pointer-events:none;display:none;overflow:hidden';
+            marker.innerHTML='<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;opacity:.95">'+
+                '<div style="width:34px;height:34px;filter:drop-shadow(0 0 8px rgba(122,247,255,.55));background:center/contain no-repeat url(\'data:image/svg+xml,'+
+                encodeURIComponent(dragonSvg)+'\')"></div></div>'+
+                '<div style="position:absolute;inset:4px;border:1px solid rgba(122,247,255,.35);border-radius:8px"></div>';
             document.body.append(marker);
             const down=e=>{
                 if (e.button!==2 || this.rightHeld || !this.rightHoldAllowed(e)) return;
                 if (!this.updateHoldCursor(e.clientX,e.clientY)) return;
+                if (!this.controls.follow) this.setControl('follow', true);
                 this.rightHeld=true;
-                this.rightContextSuppressUntil=Date.now()+800;
-                this.rightHoldStatus('Holding right-click: bots follow the empty box.');
-                console.info('[EON Bot RightHold] START');
+                this.rightContextSuppressUntil=Date.now()+900;
+                this.rightHoldStatus('Holding right-click: bots follow the dragon target.');
+                console.info('[EON Bot RightHold] START', this.cursorPoint);
                 e.preventDefault?.(); e.stopImmediatePropagation?.();
             };
             const move=e=>{
@@ -261,7 +278,10 @@
                 if (typeof e.buttons==='number' && !(e.buttons & 2)) {
                     this.releaseRightHold('mouse button state changed'); return;
                 }
-                this.updateHoldCursor(e.clientX,e.clientY);
+                if (!this.updateHoldCursor(e.clientX,e.clientY)) {
+                    this.releaseRightHold('pointer left play field', false);
+                    return;
+                }
             };
             const up=e=>{
                 if (e.button!==2 || !this.rightHeld) return;
@@ -280,7 +300,6 @@
                 if (document.hidden) this.releaseRightHold('tab hidden');
             });
             root.addEventListener('contextmenu',e=>{
-                // Browsers may send contextmenu AFTER mouseup.
                 if ((this.rightHeld || Date.now()<this.rightContextSuppressUntil) && this.rightHoldAllowed(e)) {
                     e.preventDefault?.();e.stopImmediatePropagation?.();
                 }
@@ -681,7 +700,7 @@
             document.head.append(style);
             const panel = this.panel = document.createElement('aside'); panel.id = 'eon-bots-panel'; panel.hidden = true;
             panel.setAttribute('aria-label', 'Bot controls');
-            panel.innerHTML = '<header><strong>10 account slots · 2 connections × up to 2 players</strong><button data-close aria-label="Close bot controls">×</button></header><div class="bot-actions"><button data-connect>Connect all</button><button data-spawn>Spawn all players</button><button data-stop>Disconnect all</button></div><div data-cards></div><small>Show/hide shortcut: Settings → Controls → Bot Controls. Spawn near uses spectator positioning; only the server decides the initial location. Hold right-click to display a blank square and steer live bots. Release hides the square and stops/disconnects per your chosen release action. Fast split: 100 ms · Light feed: one eject / 300 ms. Bots keep working while your main player is dead, spectating, or in the lobby. Actions pause while typing or editing settings. Player mode waits when the server no longer supplies the selected player’s position.</small>';
+            panel.innerHTML = '<header><strong>10 account slots · 2 connections × up to 2 players</strong><button data-close aria-label="Close bot controls">×</button></header><div class="bot-actions"><button data-connect>Connect all</button><button data-spawn>Spawn all players</button><button data-stop>Disconnect all</button></div><div data-cards></div><small>Show/hide shortcut: Settings → Controls → Bot Controls. Spawn near uses spectator positioning; only the server decides the initial location. Hold right-click to display a dragon target box and steer live bots. Release hides it and stops/disconnects per your chosen release action. Fast split: 100 ms · Light feed: one eject / 300 ms. Bots keep working while your main player is dead, spectating, or in the lobby. Actions pause while typing or editing settings. Player mode waits when the server no longer supplies the selected player’s position.</small>';
             panel.querySelector('[data-close]').onclick = () => this.toggle();
             panel.querySelector('[data-connect]').onclick = () => this.connectAll();
             panel.querySelector('[data-spawn]').onclick = () => this.bots.forEach(b => this.spawn(b.index));
@@ -725,7 +744,7 @@
             }
             panel.querySelector('[data-cards]').before(accountSection);
             const follow = document.createElement('section');
-            follow.innerHTML = '<label>Follow <select data-follow-mode aria-label="Follow mode"><option value="mouse">Right-click hold (blank box)</option><option value="random">Random movement</option><option value="player">Selected player</option></select></label><small>Hold RIGHT mouse over the game to show a blank box and steer bots. Release hides the box immediately.</small><label style="margin-top:8px">On right-click release <select data-right-release aria-label="Release action"><option value="disconnect">Disconnect bot connections</option><option value="stop">Stop movement only (stay connected)</option></select></label><small data-right-hold-status role="status">Idle: no target box visible.</small><div data-player-picker hidden><div class="bot-actions" style="margin-top:10px"><select data-target-player aria-label="Player to follow" style="min-width:0;flex:1"><option value="">Choose a player…</option></select><button data-refresh-players>Refresh</button></div><small data-target-status>Choose a player from the list.</small></div><strong style="display:block;margin:12px 0">All bots</strong><div class="bot-options" data-shared-controls></div><small>Rebind shortcuts: Settings → Controls → Bots. Each player slot chooses its own destination in random mode.</small>';
+            follow.innerHTML = '<label>Follow <select data-follow-mode aria-label="Follow mode"><option value="mouse">Right-click hold (dragon box)</option><option value="random">Random movement</option><option value="player">Selected player</option></select></label><small>Hold RIGHT mouse over the game to show a dragon target box and steer bots. Release hides it immediately.</small><label style="margin-top:8px">On right-click release <select data-right-release aria-label="Release action"><option value="disconnect">Disconnect bot connections</option><option value="stop">Stop movement only (stay connected)</option></select></label><small data-right-hold-status role="status">Idle: no dragon target visible.</small><div data-player-picker hidden><div class="bot-actions" style="margin-top:10px"><select data-target-player aria-label="Player to follow" style="min-width:0;flex:1"><option value="">Choose a player…</option></select><button data-refresh-players>Refresh</button></div><small data-target-status>Choose a player from the list.</small></div><strong style="display:block;margin:12px 0">All bots</strong><div class="bot-options" data-shared-controls></div><small>Rebind shortcuts: Settings → Controls → Bots. Each player slot chooses its own destination in random mode.</small>';
             accountSection.before(follow);
             follow.querySelectorAll('select').forEach(select => { select.style.cssText += ';background:#172235;color:#edf5ff;border:1px solid #42627d;padding:7px;border-radius:6px;max-width:100%'; });
             follow.querySelector('[data-follow-mode]').onchange = event => {
