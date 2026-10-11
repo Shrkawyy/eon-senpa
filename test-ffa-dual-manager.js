@@ -1,0 +1,15 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const elements=[];
+const root={};root.window=root;root.console={info(){}},root.document={createElement:()=>({style:{},setAttribute(){},append(){}}),body:{append(e){elements.push(e)}},querySelector:()=>({textContent:'Free For All - EUROPE'}),querySelectorAll:()=>[{dataset:{value:'wss://eu1.senpa.io:7101'},textContent:'Free For All - EUROPE'}]};
+root.localStorage={getItem(){return null},setItem(){}};root.SenpaAccount={snapshot(){return {verified:true}}};root.Date=Date;root.URL=URL;root.setTimeout=(fn)=>0;root.clearTimeout=()=>{};
+root.Uint8Array=Uint8Array;root.ArrayBuffer=ArrayBuffer;root.performance={now:()=>0};
+vm.runInNewContext(fs.readFileSync(__dirname+'/src/eonNativeMulti.js','utf8'),root);
+vm.runInNewContext(fs.readFileSync(__dirname+'/src/eonDualFFA.js','utf8'),root);
+const session=new root.EonNativeMulti.GameConnection();let openCount=0;const make=(second=false)=>({isEonSecondary:second,isConnected:true,clientReady:true,authCompleted:true,tabs:[{player:{cells:[]}}],probeUrl:'wss://eu1.senpa.io:7101',app:app,stopAllFeeding(){},isDead:true,sendSpawn(){this.spawns=(this.spawns||0)+1;},close(){this.closed=true},events:{once(event,callback){this.callback=callback}}});
+const app={player:{serverUrl:'wss://eu1.senpa.io:7101'},gameConnection:session,lobby:{initClient(url,opts){openCount++;const c=make(true);session.addConnection(c);this.last=c;return c;}},stage:{nextStatsTime:100}};
+const primary=make(false);session.addConnection(primary);root.EonDualFFA.initialize(app);assert.equal(root.EonDualFFA.enabled(),false);assert.equal(session.current,primary);
+root.EonDualFFA.setEnabled(true);assert.equal(root.EonDualFFA.switchTab(app),true);assert.equal(openCount,1);assert.equal(session.length,2);
+app.lobby.last.events.callback();assert.equal(session.current,session.secondary);assert.equal(session.secondary.spawns,1);
+root.EonDualFFA.switchTab(app);assert.equal(session.current,primary);assert.equal(session.totalPlaying,0);
+root.EonDualFFA.setEnabled(false);assert.equal(session.current,primary);assert.equal(session.secondary.closed,true);
+console.log('PASS: opt-in dual manager, spawn, active toggle, disable without closing primary');

@@ -27,7 +27,7 @@
   {
     "order": 6,
     "name": "eonNativeMulti.js",
-    "bytes": 19867
+    "bytes": 21524
   },
   {
     "order": 7,
@@ -57,40 +57,45 @@
   {
     "order": 12,
     "name": "eonSenpaProtocol.js",
-    "bytes": 25995
+    "bytes": 26100
   },
   {
     "order": 13,
-    "name": "eonSenpaioIntegration.js",
-    "bytes": 13951
+    "name": "eonDualFFA.js",
+    "bytes": 5108
   },
   {
     "order": 14,
-    "name": "eonSenpaBots.js",
-    "bytes": 47722
+    "name": "eonSenpaioIntegration.js",
+    "bytes": 14159
   },
   {
     "order": 15,
-    "name": "replay.js",
-    "bytes": 55983
+    "name": "eonSenpaBots.js",
+    "bytes": 47944
   },
   {
     "order": 16,
+    "name": "replay.js",
+    "bytes": 56006
+  },
+  {
+    "order": 17,
     "name": "eonSenpaSkins.js",
     "bytes": 24234
   },
   {
-    "order": 17,
+    "order": 18,
     "name": "eonSenpaNames.js",
     "bytes": 11414
   },
   {
-    "order": 18,
+    "order": 19,
     "name": "test.js",
-    "bytes": 697771
+    "bytes": 699525
   },
   {
-    "order": 19,
+    "order": 20,
     "name": "inline-18.js",
     "bytes": 277
   }

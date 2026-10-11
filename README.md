@@ -1,3 +1,5 @@
+# EON Senpa - Dual FFA 2.1.0 (Experimental)
+
 # EON Senpa — License-screen removed (v2.0.0)
 
 This fork removes the **legacy EON access-key dialog and license heartbeat** from the locally deployed userscript. It does **not** forge a license, replace server responses, change Senpa login, or relax any server-enforced limits.

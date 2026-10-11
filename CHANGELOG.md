@@ -1,6 +1,7 @@
-# Version 2.0.0
-
-- Removed old EON access-key overlay and 5-second heartbeat from active code.
-- Kept compatibility for existing `app.authManager` callers.
-- Preserved Senpa OAuth token checks and bot-only diagnostic console.
-- Rebuilt the userscript payload from the modified sources.
+# 2.1.0
+- Optional native two-socket FFA Multi architecture while sharing only the verified primary Senpa account
+- Dedicated dual FFA toggle and diagnostics; no implicit connection or automatic reconnect
+- Preserved one-socket native slots on other game modes
+- Add rendering of inactive socket owned cells and camera following both player groups
+- Maintain second client's nickname/skin separate from primary, without replacing profile
+- No bypass of server authentication, CAPTCHA or server connection limits

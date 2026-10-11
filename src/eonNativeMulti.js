@@ -67,7 +67,7 @@
                 mainAccount:session, verifiedWhenSlotsGranted:client.eonSlotAuthVerified ?? null,
                 closeCode:client.lastCloseCode ?? null, closeReason:client.lastCloseReason || '',
                 selectedServer:client.probeUrl || null,
-                note:client.tabs?.length === 1 ? 'Server allocated one slot on this game connection; ONYX uses a different two-connection architecture.' : null,
+                note:client.tabs?.length === 1 ? 'Server allocated one slot on this connection. Optional Dual FFA may request a separate second socket.' : null,
                 events:(client.eonMultiHistory || []).slice()};
         },
         authChanged() {
@@ -101,20 +101,41 @@
         }
     };
 
-    // Exactly one network client. The server's player slots are plain state,
-    // sharing its socket, world, authentication, and packet decoder.
+    // One primary game connection, with an optional independently negotiated
+    // FFA secondary. Never invent player slots, credentials or protocol IDs.
     class GameConnection {
-        constructor() { this.client = null; }
-        get current() { return this.client; }
-        get clients() { return this.client ? [this.client] : []; }
-        get length() { return this.client ? 1 : 0; }
-        get totalPlaying() { return this.client?.tabs.filter(tab => tab.player.cells.length).length || 0; }
+        constructor() { this._clients = []; this._active = null; }
+        get current() { return this._active || this.primary || this._clients[0] || null; }
+        get primary() { return this._clients.find(c => !c.isEonSecondary) || null; }
+        get secondary() { return this._clients.find(c => c.isEonSecondary) || null; }
+        get clients() { return this._clients.slice(); }
+        get length() { return this._clients.length; }
+        get totalPlaying() { return this._clients.reduce((n,c) => n + (c.tabs?.filter(t => t.player.cells.length).length || 0), 0); }
         addConnection(client) {
-            if (this.client && this.client !== client) throw new Error('A game connection already exists');
-            this.client = client;
+            if (this._clients.includes(client)) return;
+            if (this._clients.length >= 2 || (!client.isEonSecondary && this.primary) ||
+                (client.isEonSecondary && (!this.primary || this.secondary)))
+                throw new Error('Only one primary and one authorized secondary connection are supported');
+            this._clients.push(client);
+            if (!this._active) this._active = client;
         }
-        removeConnection(client) { if (this.client === client) this.client = null; }
-        forEachClient(callback) { if (this.client) callback(this.client); }
+        setActive(client) {
+            if (!this._clients.includes(client) || !client.clientReady) return false;
+            if (this._active !== client) {
+                this._active?.stopAllFeeding?.();
+                this._active = client;
+                const stage = client.app?.stage;
+                if (stage) stage.nextStatsTime = 0;
+            }
+            return true;
+        }
+        removeConnection(client) {
+            const n = this._clients.indexOf(client);
+            if (n < 0) return;
+            this._clients.splice(n, 1);
+            if (this._active === client) this._active = this.primary || this._clients[0] || null;
+        }
+        forEachClient(callback) { this.clients.forEach(callback); }
     }
 
     function attachClient(client) {
@@ -133,10 +154,10 @@
             this.eonSlotAuthVerified = accountState().verified;
             record(this, 'SERVER_SLOTS', this.tabs.length + ' native player slot(s) granted; main-account=' +
                 (this.eonSlotAuthVerified ? 'verified' : accountState().signedIn ? 'pending' : 'guest'));
-            if (this.tabs.length === 1) root.setTimeout(() => showReconnectOffer(this), 200);
+            if (!this.isEonSecondary && this.tabs.length === 1) root.setTimeout(() => showReconnectOffer(this), 200);
             // A one-slot handshake cannot be turned into two players locally.
             // Explain the real limitation rather than issuing invalid spawn packets.
-            if (this.tabs.length < 2 && isFFA(this)) {
+            if (this.tabs.length < 2 && isFFA(this) && !this.isEonSecondary && !root.EonDualFFA?.enabled()) {
                 this.app.toasts?.show('FFA Multi unavailable: server allocated only ' +
                     this.tabs.length + ' player slot. Check the FFA mode/account.', 'info', 6500);
             }
@@ -208,6 +229,8 @@
         };
         client.switchPlayer = function () {
             if (!this.clientReady) { record(this, 'SWITCH_IGNORED', 'Connection not ready'); return false; }
+            if (this.tabs.length < 2 && root.EonDualFFA?.enabled() && isFFA(this))
+                return root.EonDualFFA.switchTab(this.app);
             if (this.tabs.length < 2) {
                 record(this, 'NO_SECOND_SLOT', 'Server allocated ' + this.tabs.length + ' slot(s)');
                 const now = Date.now();
@@ -295,12 +318,14 @@
     function updateCamera(stage) {
         const client = stage.app.gameConnection.current;
         if (client) {
-            client.updatePlayerPosition();
+            stage.app.gameConnection.forEachClient(c => c.updatePlayerPosition());
             // Senpa averages every owned cell across all slots, not each slot's
             // center. A newly spawned cell has the same weight as one split cell.
             let x = 0, y = 0, count = 0;
-            for (const {player} of client.tabs) {
-                for (const cell of player.cells) { x += cell.x; y += cell.y; count++; }
+            for (const connection of stage.app.gameConnection.clients) {
+                for (const {player} of connection.tabs) {
+                    for (const cell of player.cells) { x += cell.x; y += cell.y; count++; }
+                }
             }
             if (count) {
                 stage.camera.target.x = x / count;
@@ -328,8 +353,9 @@
                     '">Player ' + (tab.index + 1) + ' · ' + mass + ' · ' + tab.player.cells.length + ' cells</span>';
             }
             if (isFFA(client)) {
-                const auth = accountState();
-                html += '<span class="stat-badge">FFA Multi: ' + client.tabs.length + ' slot(s) · ' +
+                const auth = accountState(), dual = stage.app.gameConnection.secondary;
+                const label = dual ? ' · Dual FFA: ' + (dual.clientReady ? '2 sockets ready' : 'connecting') : '';
+                html += '<span class="stat-badge">FFA Multi: ' + client.tabs.length + ' server slot(s)' + label + ' · ' +
                     (auth.verified ? 'Account verified' : auth.signedIn ? 'Login pending' : 'Guest') + '</span>';
             }
         }

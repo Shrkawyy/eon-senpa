@@ -177,7 +177,7 @@
         if (at + length * 2 > view.byteLength) return;
         let message = '';
         for (let i = 0; i < length; i++, at += 2) message += String.fromCharCode(view.getUint16(at, true));
-        if (client.isAuxiliary) {
+        if (client.isAuxiliary || client.isEonSecondary) {
             // Each helper owns its nickname and server notices. Do not let its
             // server response edit the main player's input, lobby or chat.
             if (opcode === 41 && type <= 2) {
@@ -187,7 +187,7 @@
                     if (separator < 0) return;
                     nickname = message.slice(0, separator);
                     message = message.slice(separator + 1);
-                    client.app.player.nickname1 = nickname;
+                    if (!client.isEonSecondary) client.app.player.nickname1 = nickname;
                 }
                 client.serverMessage = message;
                 client.events.emit('serverMessage', {type, message, nickname});
@@ -311,7 +311,7 @@
                     this.lastCloseCode = event.code;
                     this.lastCloseReason = typeof event.reason === 'string' ? event.reason.slice(0, 240) : '';
                     this.logger.warn('[Senpa]', message);
-                    const label = this.isAuxiliary ? null : document.querySelector('.reconnect-message');
+                    const label = (this.isAuxiliary || this.isEonSecondary) ? null : document.querySelector('.reconnect-message');
                     if (label) label.textContent = message;
                 });
                 this.connectionTimeout = setTimeout(() => {
@@ -455,7 +455,7 @@
             client.emojiState = {until:0, pendingUntil:0, cooldownMs:0};
             client.serverClientId = null;
             client.playerIds = [];
-            const banner = client.isAuxiliary ? null : document.getElementById?.('server-message');
+            const banner = (client.isAuxiliary || client.isEonSecondary) ? null : document.getElementById?.('server-message');
             if (banner) { banner.textContent = ''; banner.hidden = true; }
         });
         root.EonNativeMulti?.attachClient(client);

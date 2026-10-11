@@ -4794,26 +4794,34 @@
                     }
                 }, {
                     key: "initClient",
-                    value: function(url) {
-                        const session = this.app.gameConnection;
-                        if (session.current) return session.current;
-                        if (this.app.player.pendingConnections.length) return this.app.player.pendingConnections[0];
+                    value: function(url, options = {}) {
+                        const session = this.app.gameConnection, secondary = options.secondary === true;
+                        if (secondary) {
+                            if (!session.primary?.clientReady || session.secondary ||
+                                session.primary.probeUrl !== url || !window.EonDualFFA?.enabled()) return null;
+                        } else {
+                            if (session.primary) return session.primary;
+                            const existing = this.app.player.pendingConnections.find(c => !c.isEonSecondary);
+                            if (existing) return existing;
+                        }
                         const client = new bt(this.app);
+                        client.isEonSecondary = secondary;
                         window.EonSenpaIntegration.patchClient(client);
                         session.addConnection(client);
                         this.app.player.pendingConnections.push(client);
-                        const toast = this.app.toasts.show("Connecting to Senpa...", "info", 0, () => client.close());
+                        const toast = this.app.toasts.show(secondary ? "Connecting FFA Multi player 2..." : "Connecting to Senpa...", "info", 0, () => client.close());
                         const removePending = () => {
                             this.app.player.pendingConnections = this.app.player.pendingConnections.filter(item => item !== client);
                         };
-                        client.events.on("connected", () => this.hideReconnect());
+                        client.events.on("connected", () => { if (!secondary) this.hideReconnect(); });
                         client.events.on("ready", () => {
                             removePending(); this.app.toasts.remove(toast);
-                            this.app.toasts.show("Connected", "success", 2000);
+                            this.app.toasts.show(secondary ? "FFA secondary connected" : "Connected", "success", 2000);
                         });
                         client.events.on("disconnected", () => {
                             removePending(); this.app.toasts.remove(toast); session.removeConnection(client);
-                            if (!this.isSwitchingServer && !this.app.replayManager?.isReplay) {
+                            window.EonDualFFA?.onDisconnected(client);
+                            if (!secondary && !session.primary && !this.isSwitchingServer && !this.app.replayManager?.isReplay) {
                                 if (this.isVisible) {
                                     this.hideReconnect();
                                     this.app.toasts.show("Connection closed. Use Reconnect to try again.", "error", 5000);
@@ -4829,6 +4837,7 @@
                             else this.app.toasts.show("Unknown verification type: " + data.type, "error", 5000);
                         });
                         client.events.on("died", () => {
+                            if (secondary && session.current !== client) return;
                             this.app.input.states.macroFeed = false;
                             if (this.app.settings.get("showMenuOnDeath")) this.show();
                             else client.spectate.enabled = true;
@@ -6697,6 +6706,19 @@
                             const cell = client.cellsToBeRemoved[index]; move(cell);
                             if (cell.fadeOutAnimationCompleted) { client.cellsToBeRemoved.splice(index, 1); client.cellPool.release(cell); }
                             else this.cellsFrameRemoved.push(cell);
+                        }
+                        // Secondary world is decoded independently. Show its own
+                        // cells when they are outside the active socket's viewport.
+                        const seen = new Set(this.cellsFrame.map(cell => cell.id));
+                        for (const other of this.app.gameConnection.clients) {
+                            if (other === client || !other.clientReady) continue;
+                            const timeOther = window.EonSenpaMotion.time(other, time);
+                            for (const tab of other.tabs || []) for (const cell of tab.player.cells) {
+                                if (seen.has(cell.id)) continue;
+                                seen.add(cell.id);
+                                cell.moveCell(animationDelta, timeOther, speed, eat, window.EonSenpaMotion.enabled(other), sizeSpeed, eatSpeed, spawnSpeed);
+                                this.cellsFrame.push(cell);
+                            }
                         }
                         this.cellsFrame.sort((a, b) => a.r === b.r ? a.id - b.id : a.r - b.r);
                     }

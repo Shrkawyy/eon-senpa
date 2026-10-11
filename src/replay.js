@@ -407,7 +407,7 @@
             clearInterval(this.interval);
             this.isReplay = true;
             this.app.input.handleWindowBlur();
-            this.app.gameConnection.current?.close();
+            this.app.gameConnection.forEachClient(client => client.close());
             if (this.client) this.app.gameConnection.removeConnection(this.client);
             this.app.lobby.hideReconnect();
             this.client?.cleanup();

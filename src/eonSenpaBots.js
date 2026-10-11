@@ -236,7 +236,7 @@
             if (label && label.textContent !== text) label.textContent = text;
         }
         refreshTargets() {
-            const main = this.app.gameConnection.current, select = this.panel.querySelector('[data-target-player]');
+            const main = (this.app.gameConnection.primary || this.app.gameConnection.current), select = this.panel.querySelector('[data-target-player]');
             if (this.targetConnection !== main) { this.targetId = null; this.targetRecord = null; this.targetConnection = main; }
             const ownHelpers = new Set(this.bots.map(bot => bot.client?.serverClientId).filter(id => id != null));
             const rows = [...(main?.playerClients || [])].filter(([id]) => !ownHelpers.has(id));
@@ -247,7 +247,7 @@
             select.value = this.targetId === null ? '' : String(this.targetId);
         }
         playerTarget(now = performance.now()) {
-            const main = this.app.gameConnection.current;
+            const main = (this.app.gameConnection.primary || this.app.gameConnection.current);
             if (this.targetId === null) { this.setTargetStatus('Choose a player from the list.'); return null; }
             // Bind to the current identity, not just a reusable name or server ID.
             if (!ready(main) || main !== this.targetConnection || !this.targetRecord || main.playerClients.get(this.targetId) !== this.targetRecord ||
@@ -271,14 +271,14 @@
             return point;
         }
         anchor() {
-            const main = this.app.gameConnection.current;
+            const main = (this.app.gameConnection.primary || this.app.gameConnection.current);
             const cells = main?.player?.cells.length ? main.player.cells : main?.tabs?.flatMap(tab => tab.player.cells) || [];
             if (!cells.length) return null;
             return {x:cells.reduce((sum, c) => sum + (c.targetX ?? c.x), 0) / cells.length,
                 y:cells.reduce((sum, c) => sum + (c.targetY ?? c.y), 0) / cells.length};
         }
         async connect(index) {
-            const bot = this.bots[index], main = this.app.gameConnection.current;
+            const bot = this.bots[index], main = (this.app.gameConnection.primary || this.app.gameConnection.current);
             if (bot.client) return;
             if (!ready(main) || this.app.replayManager?.isReplay) { this.setStatus(bot, 'Connect your main player first'); return; }
             const account = this.accounts[bot.accountIndex];
@@ -489,7 +489,7 @@
         }
         tick() {
             if (!this.bots.some(bot => bot.client)) return;
-            const main = this.app.gameConnection.current, now = performance.now();
+            const main = (this.app.gameConnection.primary || this.app.gameConnection.current), now = performance.now();
             const replay = this.app.replayManager?.isReplay;
             // The lobby is normally visible before Play and after death. Helper
             // controls remain independent of the main player's spawn/menu state.
@@ -594,7 +594,7 @@
             }
             follow.querySelector('[data-refresh-players]').onclick = () => this.refreshTargets();
             follow.querySelector('[data-target-player]').onchange = event => {
-                this.targetConnection = this.app.gameConnection.current;
+                this.targetConnection = (this.app.gameConnection.primary || this.app.gameConnection.current);
                 this.targetId = event.target.value === '' ? null : Number(event.target.value);
                 this.targetRecord = this.targetConnection?.playerClients.get(this.targetId) || null;
                 this.playerTarget(); event.target.blur();

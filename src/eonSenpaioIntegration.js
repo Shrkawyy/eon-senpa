@@ -37,7 +37,7 @@
     function patchClient(client) {
         if (client.__senpaAccountBound) return client;
         root.EonSenpaProtocol?.patchClient(client);
-        if (!client.isAuxiliary) root.EonReplay?.attachClient(client);
+        if (!client.isAuxiliary && !client.isEonSecondary) root.EonReplay?.attachClient(client);
         client.__senpaAccountBound = true;
         clients.add(client);
         client.sendAuth = function () {
@@ -50,11 +50,12 @@
         client.sendPlayerInfo = function () {
             if (!this.authCompleted || this.isAlive) return;
             const player = this.app.player, token = tokenFor(this);
-            const name = player.nickname1;
+            const name = this.isEonSecondary ? (player.nickname2 || player.nickname1) : player.nickname1;
             this.sendMessage(packet(10, string16(name || ''), ...(token ? [string16(token, true)] : [])));
             this.sendTeamTag();
             for (let index = 0; index < Math.min(this.playerIds?.length || 0, 2); index++) {
-                const skin = index === 0 ? player.skin1 : player.skin2;
+                const skin = this.isEonSecondary ? (player.skin2 || player.skin1) :
+                    (index === 0 ? player.skin1 : player.skin2);
                 this.sendMessage(packet(21, Uint8Array.of(index), string8(skin), ...(token ? [string16(token, true)] : [])));
             }
         };
@@ -186,6 +187,7 @@
         if (app) return;
         app = instance;
         root.EonSenpaProtocol?.initialize(app);
+        root.EonDualFFA?.initialize(app);
         for (const client of [...app.gameConnection.clients, ...(app.player.pendingConnections || [])]) patchClient(client);
         app.lobby.solveTurnstile = solveVerification;
         createPanel();
